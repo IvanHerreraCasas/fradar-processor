@@ -14,7 +14,6 @@ class FRadarProcessor:
         self.images_dir = images_dir
         
         os.makedirs(self.images_dir, exist_ok=True)
-        os.makedirs(self.animations_dir, exist_ok=True)
         
     def create_plots(self, filepath: str) -> None:
         """Generate plots for each variable from radar data file."""
