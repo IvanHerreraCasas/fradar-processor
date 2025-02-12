@@ -4,7 +4,7 @@ venv/
 .venv
 
 # yaml files
-
+config.yaml
 
 # cache
 cache/
@@ -14,5 +14,6 @@ __pycache__/
 argparse
 sys
 yaml
+
 
 # 
