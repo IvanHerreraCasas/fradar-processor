@@ -4,6 +4,7 @@ import os
 import datetime
 import glob
 import shutil
+import re
 
 from core.processor import FRadarProcessor
 
@@ -113,7 +114,7 @@ class FileMonitor:
         """
         
         try:
-            filename = file_path.split("/")[-1]
+            filename = re.split(r'[\\/]', file_path)[-1]
             
             date = self._parse_file_datetime(filename).strftime("%Y%m%d")
             output_path = os.path.join(self.output_dir, date)
