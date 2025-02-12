@@ -1,2 +1,18 @@
+
+# Environment
 venv/
 .venv
+
+# yaml files
+
+
+# cache
+cache/
+__pycache__/
+
+# parse
+argparse
+sys
+yaml
+
+# 
