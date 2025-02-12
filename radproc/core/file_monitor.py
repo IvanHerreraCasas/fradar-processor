@@ -120,6 +120,10 @@ class FileMonitor:
             output_path = os.path.join(self.output_dir, date)
                             
             os.makedirs(output_path, exist_ok=True)
+            
+            # Check if the output file exists and remove it
+            if os.path.isfile(output_path):
+                os.remove(output_path)
                 
             # Move file/directory to the target directory
             shutil.move(file_path, output_path)
