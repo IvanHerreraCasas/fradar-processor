@@ -39,7 +39,7 @@ class FileMonitor:
             date_str = parts[1]
             time_str = parts[2]
             
-            return datetime.datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M")
+            return datetime.datetime.strptime(f"{date_str}_{time_str}", "%Y%m%d_%H%M%S")
         
         except (ValueError, IndexError):
             return None
