@@ -9,20 +9,20 @@ class FRadarProcessorService:
         """
         self.name = name
 
-    def start(self) -> None:
+    def start(self, args) -> None:
         """Start the Windows service"""
         subprocess.run(["sc", "start", self.name], check=True)
 
-    def stop(self) -> None:
+    def stop(self, args) -> None:
         """Stop the Windows service"""
         subprocess.run(["sc", "stop", self.name], check=True)
 
-    def restart(self) -> None:
+    def restart(self, args) -> None:
         """Restart the Windows service"""
         self.stop()
         self.start()
 
-    def status(self) -> str:
+    def status(self, args) -> str:
         """Get service status"""
         result = subprocess.run(
             ["sc", "query", self.name], 
@@ -32,15 +32,15 @@ class FRadarProcessorService:
         )
         return result.stdout
 
-    def enable(self) -> None:
+    def enable(self, args) -> None:
         """Set service to start automatically at boot"""
         subprocess.run(["sc", "config", self.name, "start=", "auto"], check=True)
 
-    def disable(self) -> None:
+    def disable(self, args) -> None:
         """Disable automatic service startup"""
         subprocess.run(["sc", "config", self.name, "start=", "disabled"], check=True)
 
-    def delete(self) -> None:
+    def delete(self, args) -> None:
         """Delete/Uninstall the service"""
         subprocess.run(["sc", "delete", self.name], check=True)
 
