@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse
 import yaml
 import matplotlib
@@ -77,8 +79,6 @@ def main():
 
     # Combine the script directory with the relative path and resolve to absolute
     CONFIG_FILE = os.path.abspath(os.path.join(script_dir, relative_path))
-    
-    print(CONFIG_FILE)
 
     cli = FRadarProcCLI(CONFIG_FILE)
     service = FRadarProcessorService()
