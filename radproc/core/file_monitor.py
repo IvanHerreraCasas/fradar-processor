@@ -144,5 +144,5 @@ class FileMonitor:
         for file_path in file_list:
             print(f"Processing {file_path}")   
             self.processor.create_plots(file_path)
-            self.move_file[file_path]
+            self.move_file(file_path)
             
