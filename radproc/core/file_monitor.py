@@ -118,12 +118,13 @@ class FileMonitor:
             
             date = self._parse_file_datetime(filename).strftime("%Y%m%d")
             output_path = os.path.join(self.output_dir, date)
+            output_filepath = os.path.join(output_path, filename)
                             
             os.makedirs(output_path, exist_ok=True)
             
             # Check if the output file exists and remove it
-            if os.path.isfile(output_path):
-                os.remove(output_path)
+            if os.path.isfile(output_filepath):
+                os.remove(output_filepath)
                 
             # Move file/directory to the target directory
             shutil.move(file_path, output_path)
