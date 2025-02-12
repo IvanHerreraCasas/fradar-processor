@@ -1,0 +1,5 @@
+input_dir: /home/ivan/Projects/0_Research/udep/radar_lluvias/input
+output_dir: /home/ivan/Projects/0_Research/udep/radar_lluvias/output
+images_dir: /home/ivan/Projects/0_Research/udep/radar_lluvias/images
+variables:
+  RATE: "Taza de precipitaci\xF3n (mm/h)"
