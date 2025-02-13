@@ -16,4 +16,5 @@ sys
 yaml
 
 
-# 
+# log
+*.log
