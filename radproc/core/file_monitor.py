@@ -5,17 +5,19 @@ import datetime
 import glob
 import shutil
 import re
+import logging
 
 from core.processor import FRadarProcessor
 
 class FileMonitor:
-    def __init__(self, input_dir, output_dir, images_dir, processor: FRadarProcessor, after_process):
+    def __init__(self, input_dir, output_dir, images_dir, processor: FRadarProcessor, after_process, logger: logging.Logger):
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.images_dir = images_dir
         self.after_process = after_process
             
         self.processor = processor
+        self.logger = logger
                 
     def run(self, interval=60):
         while True:
@@ -23,6 +25,7 @@ class FileMonitor:
             if new_files:
                 self.process_files(new_files)
   
+            self.logger.info(f"Waiting {interval} seconds")
             time.sleep(interval)
              
     def _parse_dir_date(self, dir_name):
@@ -46,6 +49,7 @@ class FileMonitor:
             return None
 
     def get_new_files(self):
+        self.logger.info("Getting new files")
         if not os.path.exists(self.input_dir):
             return []
 
@@ -148,7 +152,7 @@ class FileMonitor:
 
         # Add your custom processing logic here
         for file_path in file_list:
-            print(f"Processing {file_path}")   
+            self.logger.info(f"Processing {file_path}")
             self.processor.create_plots(file_path)
             self.move_file(file_path)
             

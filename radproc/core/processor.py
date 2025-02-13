@@ -3,15 +3,17 @@ from plotting.plotter import FRadarPlotter
                 
 import os
 import re
+import logging
 from datetime import datetime, date
 from typing import List, Optional
 
 class FRadarProcessor:
     
-    def __init__(self, images_dir: str, variables: List[str]):
+    def __init__(self, images_dir: str, variables: List[str], logger: logging.Logger):
         self.variables = variables
         
         self.images_dir = images_dir
+        self.logger = logger
         
         os.makedirs(self.images_dir, exist_ok=True)
         
