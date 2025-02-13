@@ -116,3 +116,6 @@ class FRadarData:
             date_time = date_time.strftime(format)
             
         return date_time
+
+    def close(self):
+        self.ds.close()
