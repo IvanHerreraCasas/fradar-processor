@@ -2,13 +2,21 @@
 setlocal EnableDelayedExpansion
 
 :: Set up paths
-set "rel_project_path=..\.."
-set "project_path=%~dp0%rel_project_path%"
+set "rel_project_path=..\"
 
-set "radproc_path=%project_path%radproc"
+set "current_script_dir=%~dp0"
+
+pushd "%current_script_dir%"
+pushd "%rel_project_path%"
+set "project_path=%CD%"
+popd
+popd
+
+set "radproc_path=%project_path%\radproc"
 set "cli_path=%radproc_path%\cli\main.py"
 set "venv_path=%project_path%\.venv"
 set "scripts_path=%project_path%\scripts"
+set "requirements_path=%project_path%\requirements.txt"
 
 :: Verify directories exist
 if not exist "%radproc_path%" (
@@ -41,7 +49,7 @@ call "%venv_path%\Scripts\activate.bat" || (
 )
 
 :: Install requirements
-pip install -r requirements.txt || (
+pip install -r %requirements_path% || (
     echo Error: Failed to install requirements
     exit /b 1
 )
@@ -56,50 +64,33 @@ pip install -r requirements.txt || (
 net session >nul 2>&1
 set "is_admin=%errorlevel%"
 
-echo Would you like to add frad-proc to PATH? This will allow you to run it from anywhere.
-echo 1. Yes - Add permanently (requires admin rights)
-echo 2. Yes - Add temporarily (for current session only)
-echo 3. No - Skip this step
-set /p "choice=Enter your choice (1-3): "
-
-if "%choice%"=="1" (
-    if "%is_admin%"=="0" (
-        :: Add to system PATH permanently
-        for /f "tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path') do set "current_path=%%b"
-        
-        :: Check if path is already in PATH
-        echo %current_path% | find /i "%scripts_path%" > nul
-        if errorlevel 1 (
-            setx /M PATH "%current_path%;%scripts_path%" || (
-                echo Error: Failed to modify system PATH
-                exit /b 1
-            )
-            echo Successfully added to system PATH. Please restart your command prompt to use frad-proc globally.
-        ) else (
-            echo Path is already in system PATH.
+if "%is_admin%"=="0" (
+    :: Add to system PATH permanently
+    for /f "tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path') do set "current_path=%%b"
+    
+    :: Check if path is already in PATH
+    echo %current_path% | find /i "%scripts_path%" > nul
+    if errorlevel 1 (
+        setx /M PATH "%current_path%;%scripts_path%" || (
+            echo Error: Failed to modify system PATH
+            exit /b 1
         )
+        echo Successfully added to system PATH. Please restart your command prompt to use frad-proc globally.
     ) else (
-        echo Error: Administrator rights required for permanent PATH modification.
-        echo Please run this script as administrator or choose the temporary option.
-        exit /b 1
+        echo Path is already in system PATH.
     )
-) else if "%choice%"=="2" (
-    :: Add to PATH temporarily
-    set "PATH=%PATH%;%scripts_path%"
-    echo Successfully added to PATH for current session.
-    echo You can now use frad-proc from anywhere in this command prompt window.
 ) else (
-    echo Skipping PATH modification.
+    echo Please run this script as administrator.
+    exit /b 1
 )
 
-
 :: Run the commands with error checking
-call "%scripts_path%\frad-proc.bat" enable || (
+call fradar-proc enable || (
     echo Error: Failed to run frad-proc enable
     exit /b 1
 )
 
-call "%scripts_path%\frad-proc.bat" run || (
+call fradar-proc start || (
     echo Error: Failed to run frad-proc run
     exit /b 1
 )
