@@ -69,7 +69,7 @@ class FRadarProcCLI:
 def main():
     
     # Relative path to the file from the current script's location
-    relative_path = "../../config/config.yaml"
+    relative_config_path = "../../config/config.yaml"
 
     # Get the absolute path of the current script
     script_path = os.path.abspath(__file__)
@@ -78,7 +78,7 @@ def main():
     script_dir = os.path.dirname(script_path)
 
     # Combine the script directory with the relative path and resolve to absolute
-    CONFIG_FILE = os.path.abspath(os.path.join(script_dir, relative_path))
+    CONFIG_FILE = os.path.abspath(os.path.join(script_dir, relative_config_path))
 
     cli = FRadarProcCLI(CONFIG_FILE)
     service = FRadarProcessorService()
