@@ -1,53 +1,55 @@
 import subprocess
 
 class FRadarProcessorService:
-    def __init__(self, name: str = "fradar-processor") -> None:
+    def __init__(self, name: str, executable: str, logger) -> None:
         """
-        Initialize the service with a given name.
+        Initialize the scheduled task manager.
         
-        :param name: Name of the Windows service to manage
+        :param name: Name of the scheduled task.
+        :param command: Full command to execute (e.g., `"C:\\path\\to\python.exe C:\\path\\to\\main.py"`).
         """
         self.name = name
+        self.command = executable
+        self.logger = logger
 
     def start(self, args) -> None:
-        """Start the Windows service"""
-        subprocess.run(["sc", "start", self.name], check=True)
+        """Start the task immediately."""
+        self.logger.info("Starting...")
+        subprocess.run(["schtasks", "/Run", "/TN", self.name], check=True)
 
     def stop(self, args) -> None:
-        """Stop the Windows service"""
-        subprocess.run(["sc", "stop", self.name], check=True)
+        """Stop the running task (if applicable)."""
+        self.logger.info("Service stopped")
+        subprocess.run(["schtasks", "/End", "/TN", self.name], check=True)
 
     def restart(self, args) -> None:
-        """Restart the Windows service"""
+        """Restart the task (stop → start)."""
         self.stop()
         self.start()
 
     def status(self, args) -> str:
-        """Get service status"""
+        """Get detailed task status."""
         result = subprocess.run(
-            ["sc", "query", self.name], 
-            capture_output=True, 
-            text=True, 
+            ["schtasks", "/Query", "/TN", self.name, "/V"],
+            capture_output=True,
+            text=True,
             check=True
         )
         return result.stdout
 
     def enable(self, args) -> None:
-        """Set service to start automatically at boot"""
-        subprocess.run(["sc", "config", self.name, "start=", "auto"], check=True)
+        """Create the task to run at system startup."""
+        subprocess.run(
+            [
+                "schtasks", "/Create", "/TN", self.name,
+                "/SC", "ONSTART", "/TR", self.command,
+                "/RU", "SYSTEM", "/RL", "HIGHEST"
+            ],
+            check=True
+        )
+        self.logger.info("Task created")
 
     def disable(self, args) -> None:
-        """Disable automatic service startup"""
-        subprocess.run(["sc", "config", self.name, "start=", "disabled"], check=True)
-
-    def delete(self, args) -> None:
-        """Delete/Uninstall the service"""
-        subprocess.run(["sc", "delete", self.name], check=True)
-
-    # Bonus: Add error handling wrapper
-    def _safe_run(self, command: list) -> None:
-        """Wrapper for subprocess.run with error handling"""
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error: {e.stderr}")
+        """Delete the task (disable auto-start)."""
+        subprocess.run(["schtasks", "/Delete", "/TN", self.name, "/F"], check=True)
+        self.logger.info("Task deleted")
