@@ -1,7 +1,7 @@
 import subprocess
 
 class FRadarProcessorService:
-    def __init__(self, name: str, executable: str, logger) -> None:
+    def __init__(self, name: str, command: str, logger) -> None:
         """
         Initialize the scheduled task manager.
         
@@ -9,7 +9,7 @@ class FRadarProcessorService:
         :param command: Full command to execute (e.g., `"C:\\path\\to\python.exe C:\\path\\to\\main.py"`).
         """
         self.name = name
-        self.command = executable
+        self.command = command
         self.logger = logger
 
     def start(self, args) -> None:
@@ -24,8 +24,8 @@ class FRadarProcessorService:
 
     def restart(self, args) -> None:
         """Restart the task (stop → start)."""
-        self.stop()
-        self.start()
+        self.stop(args)
+        self.start(args)
 
     def status(self, args) -> str:
         """Get detailed task status."""
