@@ -1,5 +1,9 @@
 input_dir: folder/data
 output_dir: folder/data_proc
 images_dir: folder/images
+ftp:
+  host:
+  user:
+  password:
 variables:
   RATE: "Taza de precipitaci\xF3n (mm/h)"
