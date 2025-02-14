@@ -26,6 +26,6 @@ class RatePlotStyle(PlotStyle):
         precip_cmap = ListedColormap(PRECIP_COLORS)
         precip_norm = BoundaryNorm(PRECIP_BOUNDS, precip_cmap.N)
         
-        map_tile = cimgt.OSM(cache='./cache')
+        map_tile = cimgt.OSM(desired_tile_form='L', cache="./cache")
         super().__init__(precip_cmap, precip_norm, map_tile)
         
