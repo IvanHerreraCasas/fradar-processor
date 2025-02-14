@@ -84,16 +84,5 @@ if "%is_admin%"=="0" (
     exit /b 1
 )
 
-:: Run the commands with error checking
-call fradar-proc enable || (
-    echo Error: Failed to run frad-proc enable
-    exit /b 1
-)
-
-call fradar-proc start || (
-    echo Error: Failed to run frad-proc run
-    exit /b 1
-)
-
-echo Script completed successfully
+echo frad-proc is ready to ve used. Run frad-proc enable and frad-proc start to start the process.
 endlocal
