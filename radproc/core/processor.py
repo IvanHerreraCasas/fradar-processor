@@ -34,9 +34,7 @@ class FRadarProcessor:
             var_data = var_data.georeference()
             plotter.plot(var_data)
             
-            var_data.close()
-            
-        data.close()
+        
             
     def _parse_dir_date(self, dir_name: str) -> Optional[date]:
         """Parse directory name (YYYYMMDD) into a date object."""
