@@ -125,7 +125,7 @@ def main():
     logger = _setup_logger(LOG_FILE)
 
     cli = FRadarProcCLI(CONFIG_FILE, logger)
-    service = FRadarProcessorService("frad-proc", FRAD_PROC_FILE, + " run", logger)
+    service = FRadarProcessorService("frad-proc", FRAD_PROC_FILE + " run", logger)
 
     parser = argparse.ArgumentParser(description="Radar Furuno CLI")
     subparsers = parser.add_subparsers(title="Subcommands", dest="subcommand")
