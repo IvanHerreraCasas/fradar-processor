@@ -69,7 +69,7 @@ class FRadarPlotter():
         # ==============================
         # Plot Setup
         # ==============================
-        fig = plt.figure(figsize=(10, 10))
+        fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
         map_tile = self.style.map_tile
         cmap = self.style.cmap
@@ -120,9 +120,13 @@ class FRadarPlotter():
         
         ax.set_title(f"{self.variable_dname} a EL: {elevation}° \n {datetime_utc} UTC ({datetime_lt} LT)")
         
+        fig.tight_layout()
+        
         fig.savefig(filepath, dpi=300)
         
         plt.close(fig)
+        
+        return filepath
     
     def animate(self, img_paths, filename, fps=2, codec='mp4v'):
         """
