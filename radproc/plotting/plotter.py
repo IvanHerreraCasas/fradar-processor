@@ -8,6 +8,7 @@ import numpy as np
 import shapely
 import cv2
 from cartopy.geodesic import Geodesic
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
 from core.data import FRadarData
 from plotting.style import PlotStyle, RatePlotStyle
@@ -18,9 +19,10 @@ import os.path
 
 class FRadarPlotter():
     
-    def __init__(self, variable, variable_dname, output_dir):
+    def __init__(self, variable, variable_dname, output_dir, watermark_path):
         self.data = FRadarData
         self.output_dir = output_dir
+        self.watermark_path = watermark_path
         
         match variable:
             case "RATE":
@@ -83,15 +85,14 @@ class FRadarPlotter():
             cmap="gray",
         )  
         
-        # Plot data
-        
-        ds[self.variable].plot(
-        x="x",
-        y="y",
-        cmap=cmap,
-        norm=norm,
-        transform=cartopy_crs,
-        cbar_kwargs=dict(pad=0.075, shrink=0.75),
+        # Plot data and get QuadMesh object
+        quadmesh = ds[self.variable].plot(
+            x="x",
+            y="y",
+            cmap=cmap,
+            norm=norm,
+            transform=cartopy_crs,
+            cbar_kwargs=dict(pad=0.075, shrink=0.75),
         ) 
         
 
@@ -121,6 +122,26 @@ class FRadarPlotter():
         ax.set_title(f"{self.variable_dname} a EL: {elevation}° \n {datetime_utc} UTC ({datetime_lt} LT)")
         
         fig.tight_layout()
+        
+        # Add watermark below the colorbar
+        cbar = quadmesh.colorbar
+        cbar_ax = cbar.ax
+        cbar_pos = cbar_ax.get_position()  # Get position after tight_layout
+        
+        # Load watermark image (adjust path as needed)
+        watermark = plt.imread(self.watermark_path)  # Ensure this path is correct
+        
+        # Create an OffsetImage with appropriate zoom
+        zoom = 0.05  # Adjust this value to resize the watermark
+        imagebox = OffsetImage(watermark, zoom=zoom)
+        
+        # Position the watermark below the colorbar, aligned to the right
+        ab = AnnotationBbox(imagebox,
+                            (cbar_pos.x1, cbar_pos.y0 - 0.02),  # x: right edge of colorbar, y: slightly below
+                            xycoords='figure fraction',
+                            box_alignment=(1, 1),  # Align top-right of image to anchor point
+                            frameon=False)
+        ax.add_artist(ab)
         
         fig.savefig(filepath, dpi=300)
         

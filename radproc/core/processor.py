@@ -9,11 +9,12 @@ from typing import List, Optional
 
 class FRadarProcessor:
     
-    def __init__(self, images_dir: str, variables: List[str], logger: logging.Logger):
+    def __init__(self, images_dir: str, variables: List[str], logger: logging.Logger, watermark):
         self.variables = variables
         
         self.images_dir = images_dir
         self.logger = logger
+        self.watermark = watermark
         
         os.makedirs(self.images_dir, exist_ok=True)
         
@@ -29,7 +30,7 @@ class FRadarProcessor:
             output_dir = os.path.join(self.images_dir, variable, date_str, str(elevation))
             os.makedirs(output_dir, exist_ok=True)
             
-            plotter = FRadarPlotter(variable, variable_dname, output_dir)
+            plotter = FRadarPlotter(variable, variable_dname, output_dir, self.watermark)
             var_data = data.subset(variables=[variable])
             var_data = var_data.georeference()
             plotter.plot(var_data)

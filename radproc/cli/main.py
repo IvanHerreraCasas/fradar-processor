@@ -71,10 +71,11 @@ class FRadarProcCLI:
         input_dir = config["input_dir"]
         output_dir = config["output_dir"]
         images_dir = config["images_dir"]
+        watermark = config["watermark"]
 
         variables = config["variables"]
 
-        self.processor = FRadarProcessor(images_dir, variables, logger)
+        self.processor = FRadarProcessor(images_dir, variables, logger, watermark)
         self.monitor = FileMonitor(
             input_dir=input_dir,
             output_dir=output_dir,
@@ -125,28 +126,9 @@ def main():
     logger = _setup_logger(LOG_FILE)
 
     cli = FRadarProcCLI(CONFIG_FILE, logger)
-    service = FRadarProcessorService("frad-proc", FRAD_PROC_FILE + " run", logger)
 
     parser = argparse.ArgumentParser(description="Radar Furuno CLI")
     subparsers = parser.add_subparsers(title="Subcommands", dest="subcommand")
-
-    start_parser = subparsers.add_parser("start")
-    start_parser.set_defaults(func=service.start)
-
-    stop_parser = subparsers.add_parser("stop")
-    stop_parser.set_defaults(func=service.stop)
-
-    restart_parser = subparsers.add_parser("restart")
-    restart_parser.set_defaults(func=service.restart)
-
-    enable_parser = subparsers.add_parser("enable")
-    enable_parser.set_defaults(func=service.enable)
-
-    disable_parser = subparsers.add_parser("disable")
-    disable_parser.set_defaults(func=service.disable)
-
-    status_parser = subparsers.add_parser("status")
-    status_parser.set_defaults(func=service.status)
 
     run_parser = subparsers.add_parser("run")
     run_parser.set_defaults(func=cli.run)
