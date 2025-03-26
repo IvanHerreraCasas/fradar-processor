@@ -60,29 +60,6 @@ pip install -r %requirements_path% || (
     echo "%venv_path%\Scripts\python.exe" "%cli_path%" %%*
 ) > "%scripts_path%\frad-proc.bat"
 
-:: Check if we have admin rights for permanent PATH modification
-net session >nul 2>&1
-set "is_admin=%errorlevel%"
 
-if "%is_admin%"=="0" (
-    :: Add to system PATH permanently
-    for /f "tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path') do set "current_path=%%b"
-    
-    :: Check if path is already in PATH
-    echo %current_path% | find /i "%scripts_path%" > nul
-    if errorlevel 1 (
-        setx /M PATH "%current_path%;%scripts_path%" || (
-            echo Error: Failed to modify system PATH
-            exit /b 1
-        )
-        echo Successfully added to system PATH. Please restart your command prompt to use frad-proc globally.
-    ) else (
-        echo Path is already in system PATH.
-    )
-) else (
-    echo Please run this script as administrator.
-    exit /b 1
-)
-
-echo frad-proc is ready to ve used. Run frad-proc enable and frad-proc start to start the process.
+echo frad-proc is ready to be used. Add the scripts directory to your PATH to use the CLI tool globally.
 endlocal
