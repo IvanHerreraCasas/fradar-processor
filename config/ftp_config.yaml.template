@@ -1,32 +1,62 @@
+# config/ftp_config.yaml
+
+# --- Scan File Upload Settings ---
+
 # Defines the primary mode for handling scan files (.scnx.gz)
 # Options:
-#   'disabled': FTP is completely off. Standard local processing applies (move file).
-#   'standard': Standard local processing (move file) happens first. Then, if 'upload_in_standard_mode' is true, the *moved* file is queued for FTP.
-#   'ftp_only': Scan files are NOT moved locally. They are queued for FTP upload directly from the input directory. Local plot generation may still occur. Local scan file deleted by worker *only* after successful upload.
-scan_upload_mode: 'disabled' # Default: FTP is off
+#   'disabled': FTP for scans is completely off. Standard local processing applies (move file).
+#   'standard': Standard local processing (move file) happens first. Then, if 'upload_scans_in_standard_mode' is true, the *moved* scan file is queued for FTP. Image handling depends on image_upload_mode.
+#   'ftp_only': Scan files are NOT processed/moved locally. They are queued for FTP upload directly from the input directory. Plot generation happens if image_upload_mode requires it. Scan file deleted by worker *only* after successful upload if delete_local_scan_on_ftp_success is true.
+scan_upload_mode: 'disabled'
 
 # Controls if scans are queued for FTP when scan_upload_mode is 'standard'.
-upload_in_standard_mode: true # Default: Don't upload in standard mode
+upload_scans_in_standard_mode: false
 
 # If true, the queue worker will delete the local scan file after a successful FTP upload.
-# Crucial for 'ftp_only' mode. Can be true in 'standard' mode if desired, but be careful.
-delete_local_scan_on_ftp_success: false # Default: Keep local copy
+# Important for 'ftp_only' mode. Can be true in 'standard' mode if desired.
+delete_local_scan_on_ftp_success: false
+
+# --- Image File Upload Settings --- NEW SECTION ---
+
+# Defines the mode for handling generated image files (.png)
+# Options:
+#   'disabled': FTP for images is completely off.
+#   'only':     Images are queued for FTP. Scan file upload depends on 'scan_upload_mode'. Requires image generation.
+#   'also':     Images are queued for FTP *in addition* to scan files (if scan upload is enabled per scan_upload_mode/upload_scans_in_standard_mode). Requires image generation.
+image_upload_mode: 'disabled'
+
+# Controls if images are queued for FTP when scan_upload_mode is 'standard' AND image_upload_mode is 'also'.
+upload_images_in_standard_mode: false
+
+# If true, the queue worker will delete the local image file after a successful FTP upload.
+delete_local_image_on_ftp_success: false
+
+# --- General Queue Settings ---
 
 # Path to the SQLite database file for the upload queue.
 # Can be relative (to project root if running from there) or absolute.
-queue_db_path:  # Default location
+queue_db_path: "data/upload_queue.db" # Example using default relative path
 
 # Delays (in seconds) between retries for a failed upload task.
 # Worker stops after last retry fails.
-retry_delays_seconds: [60, 300, 600, 1800, 3600, 18000, 86400] # Default delays
+retry_delays_seconds: [60, 300, 600, 1800, 3600, 18000, 86400]
 
 # --- List of FTP Server Destinations ---
 servers:
-  # Add server configurations here:
-  # - alias: "backup"
-  #   host: "192.168.1.100"
-  #   user: "radar_backup"
-  #   # Env Var: FTP_PASSWORD_BACKUP_NAS
-  #   remote_scan_dir: "/volume1/radar_archive"
+  # Example Server 1
+  - alias: "primary_archive"       # Unique alias for this server
+    host: "your_ftp_host_1"        # FTP server hostname or IP
+    user: "your_ftp_user_1"        # FTP username
+    # Password must be set via Environment Variable: FTP_PASSWORD_PRIMARY_ARCHIVE
+    remote_scan_dir: "/path/to/radar/scans"   # <<< Base directory for raw scan files
+    remote_image_dir: "/path/to/radar/images" # <<< Base directory for generated image files (NEW)
+    use_passive: true              # Use passive mode (usually required)
+
+  # Example Server 2 (Optional)
+  # - alias: "secondary_backup"
+  #   host: "your_ftp_host_2"
+  #   user: "your_ftp_user_2"
+  #   # Password must be set via Environment Variable: FTP_PASSWORD_SECONDARY_BACKUP
+  #   remote_scan_dir: "/backup/scans"
+  #   remote_image_dir: "/backup/images" # <<< Base directory for images (NEW)
   #   use_passive: true
-  

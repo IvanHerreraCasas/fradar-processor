@@ -13,7 +13,7 @@ from core.utils.geo import georeference_dataset
 from core.utils.helpers import move_processed_file # Keep parse_datetime_from_filename indirectly
 from core.visualization.style import get_plot_style
 from core.visualization.plotter import create_ppi_image
-from core.utils.upload_queue import add_scan_to_queue
+from core.utils.upload_queue import add_scan_to_queue, add_image_to_queue 
 # --- End Core Imports ---
 
 # Setup logger for this module
@@ -22,113 +22,108 @@ logger = logging.getLogger(__name__)
 
 def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> bool:
     """
-    Processes a single raw radar scan file based on the configured mode.
-    'ftp_only': Queues scan for FTP, skips local move/plotting. Deletes local on SUCCESSFUL QUEUED UPLOAD via worker.
-    'standard': Performs local plotting/saving, moves local file, optionally queues moved file for FTP.
-    'disabled': Performs local plotting/saving, moves local file. No FTP.
+    Processes a single raw radar scan file based on configured modes for scans and images.
 
     Args:
         filepath: The absolute path to the raw radar scan file (.scnx.gz).
-        config: The application configuration dictionary (optional, uses get_config() if None). 
+        config: The application configuration dictionary (optional, uses get_config() if None).
 
     Returns:
-        True if local plot generation was successful (in standard/ftp_only modes)
-             OR if queuing for FTP was successful (in ftp_only mode),
-        False otherwise (e.g., read failure, plot save failure, critical queue add failure).
+        True if essential steps succeeded (read, plot saving if needed, queuing if needed), False otherwise.
     """
     if config is None: config = get_config()
     logger.info(f"Starting processing for scan: {filepath}")
 
     # --- Get Relevant Configuration ---
-    # FTP settings
+    # Scan FTP settings
     scan_upload_mode = get_setting('ftp.scan_upload_mode', 'disabled')
-    upload_in_standard_mode = get_setting('ftp.upload_in_standard_mode', False)
+    upload_scans_in_standard_mode = get_setting('ftp.upload_scans_in_standard_mode', False) # Renamed for clarity
+    # Image FTP settings (NEW)
+    image_upload_mode = get_setting('ftp.image_upload_mode', 'disabled')
+    upload_images_in_standard_mode = get_setting('ftp.upload_images_in_standard_mode', False)
+
+    # General FTP settings
     ftp_servers = get_setting('ftp.servers', [])
 
     # App settings
     variables_to_process: Dict[str, str] = get_setting('app.variables_to_process', {})
     images_dir: Optional[str] = get_setting('app.images_dir')
-    output_dir: Optional[str] = get_setting('app.output_dir') # Local move destination
+    output_dir: Optional[str] = get_setting('app.output_dir')
     watermark_path: Optional[str] = get_setting('app.watermark_path')
-    move_local_in_standard = get_setting('app.move_file_after_processing', True) # Check if local move desired in standard
+    move_local_in_standard = get_setting('app.move_file_after_processing', True)
 
     # Style settings
     watermark_zoom: float = get_setting('styles.defaults.watermark_zoom', 0.05)
+
+    # --- Determine if Plotting is Needed ---
+    # Plotting is required if images need saving locally OR if images need uploading
+    plotting_required = (variables_to_process and images_dir) or (image_upload_mode != 'disabled' and variables_to_process)
+    # If plotting is required but images_dir is missing, it's an error
+    if plotting_required and not images_dir:
+        logger.error("Configuration missing 'app.images_dir', which is required for plot generation/upload.")
+        return False
 
     # --- Basic Validations ---
     if not os.path.exists(filepath):
          logger.error(f"Input file does not exist: {filepath}")
          return False
-    if not variables_to_process:
-        logger.warning("No 'variables_to_process' defined. Skipping plot generation.")
-        # Continue if only FTP queuing is needed, but might need adjustments
-    if not images_dir and scan_upload_mode != 'disabled': # Plotting needed unless fully disabled
-        logger.error("Configuration missing 'app.images_dir'. Cannot save plots.")
-        # Can we proceed in ftp_only mode without plots? Plan says plots happen. So, error out.
+    if not variables_to_process and plotting_required:
+        logger.error("Plotting required by config, but no 'variables_to_process' defined.")
         return False
+    # If any upload mode is enabled, servers must be configured
+    if (scan_upload_mode != 'disabled' or image_upload_mode != 'disabled') and not ftp_servers:
+        logger.warning(f"FTP mode enabled for scans ('{scan_upload_mode}') or images ('{image_upload_mode}') but no servers configured. Disabling FTP.")
+        scan_upload_mode = 'disabled'
+        image_upload_mode = 'disabled'
+    # Validate output_dir if moving scan in standard mode
     if scan_upload_mode == 'standard' and move_local_in_standard and not output_dir:
         logger.warning("Scan mode is 'standard' with local move enabled, but 'app.output_dir' is not set. Disabling local move.")
         move_local_in_standard = False
-    if scan_upload_mode != 'disabled' and not ftp_servers:
-        logger.warning(f"FTP mode '{scan_upload_mode}' enabled but no servers configured. Disabling FTP actions.")
-        scan_upload_mode = 'disabled'
-    if scan_upload_mode != 'disabled' and not variables_to_process and scan_upload_mode != 'ftp_only':
-         # Plotting needed unless strictly ftp_only (where we skip it)
-         logger.error("Plotting variables ('app.variables_to_process') needed but not configured.")
-         return False
-    if scan_upload_mode != 'disabled' and not images_dir and scan_upload_mode != 'ftp_only':
-         logger.error("Image directory ('app.images_dir') needed but not configured.")
-         return False
 
-    # --- Mode 1: FTP Upload Scan ONLY (No Plotting, No Local Move) ---
-    if scan_upload_mode == 'ftp_only':
-        logger.info(f"Mode 'ftp_only': Queuing scan file for FTP upload: {filepath}")
-        # Minimal read JUST for metadata might be an optimization, but queueing needs the path anyway.
-        # For simplicity, we just queue the path directly. The worker needs the file later.
-        queued_at_least_one = False
-        queueing_succeeded = True # Assume success unless adding fails
+
+    # --- Mode 1: Scan Upload Only ('ftp_only' for scans, 'disabled' for images) ---
+    # This mode still requires plotting if image_upload_mode is NOT disabled
+    if scan_upload_mode == 'ftp_only' and image_upload_mode == 'disabled':
+        logger.info(f"Mode 'ftp_only' (scan), 'disabled' (image): Queuing scan file {filepath}")
+        queued_at_least_one_scan = False
+        scan_queueing_succeeded = True
         for server_config in ftp_servers:
             if add_scan_to_queue(filepath, server_config):
-                queued_at_least_one = True
+                queued_at_least_one_scan = True
             else:
-                # Error logged by add_scan_to_queue
-                queueing_succeeded = False # Mark critical failure if ADDING fails
+                scan_queueing_succeeded = False # Critical add failure
 
-        if not queued_at_least_one and ftp_servers: # Check if we intended to queue but failed for all
-            logger.error(f"Mode 'ftp_only': Failed to queue scan file for any FTP server: {filepath}")
-            return False # Failed to perform the primary action
+        if not queued_at_least_one_scan and ftp_servers:
+            logger.error(f"Mode 'ftp_only' (scan): Failed to queue scan file for any FTP server: {filepath}")
+            return False
+        # Skip local move, skip plotting. Success depends on queuing the scan.
+        logger.info(f"Mode 'ftp_only' (scan): Successfully queued scan file.")
+        return scan_queueing_succeeded
 
-        logger.info(f"Mode 'ftp_only': Successfully queued scan file. Local file deletion handled by worker upon successful upload.")
-        # Return True indicating the task was successfully handed off to the queue.
-        return queueing_succeeded
 
-    # --- Main Processing Logic ---
+    # --- Main Processing Logic (Reading, Plotting, Moving, Queuing) ---
     ds = None
-    local_plots_succeeded = False # Track success of local plot saving
-    queueing_succeeded = True # Assume true unless adding to queue fails critically
+    local_plots_succeeded = False # Assume false unless plots generated and saved
+    overall_success = True      # Assume true, set to false on critical failures
 
     try:
-        # --- Steps required for ALL modes that involve plotting ---
-        if scan_upload_mode != 'disabled': # Or adjust if plotting should be skipped in ftp_only
-            # 1. Read Scan
+        # --- Reading and Plotting (if required) ---
+        if plotting_required or scan_upload_mode != 'ftp_only': # Read data if plotting or standard processing
             logger.debug(f"Reading scan data for variables: {list(variables_to_process.keys())}")
             vars_to_read = list(variables_to_process.keys()) if variables_to_process else None
-            if not vars_to_read:
-                logger.warning("No variables configured to read for plotting/processing.")
-                # Need to decide if we can proceed. If mode='disabled' or standard without upload, failure.
-                # If standard WITH upload, maybe we just upload scan? Requires rethinking flow.
-                # For now, assume reading/plotting is the primary goal if not ftp_only.
-                return False
-            ds = read_scan(filepath, variables=list(variables_to_process.keys()))
-            if ds is None: return False # Cannot proceed
+            if not vars_to_read and plotting_required: # Should have been caught earlier, but double-check
+                 logger.error("Cannot proceed: Plotting required but no variables configured.")
+                 return False
 
-            # 2. Georeference
+            ds = read_scan(filepath, variables=vars_to_read)
+            if ds is None: return False # Critical failure
+
             logger.debug("Georeferencing dataset...")
             ds_geo = georeference_dataset(ds)
             if 'x' not in ds_geo.coords or 'y' not in ds_geo.coords:
-                 logger.warning("Dataset potentially missing georeference coordinates ('x','y'). Plotting might fail.")
+                 logger.warning("Dataset potentially missing georeference coordinates ('x','y').")
 
-            # 3. Extract Metadata (for plot filenames/paths)
+            # Extract Metadata
             try:
                 dt_np = np.datetime64(ds_geo['time'].values.item())
                 dt = dt_np.astype(datetime)
@@ -138,17 +133,17 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
                 elevation_code = f"{int(elevation * 100):03d}"
             except Exception as meta_err:
                 logger.error(f"Failed to extract metadata: {meta_err}", exc_info=True)
-                return False # Critical for filenames
+                return False
 
-            # 4. Generate and Save Plots Locally
-            if variables_to_process and images_dir:
+            # Generate and Save Plots Locally (if required)
+            saved_image_paths: Dict[str, str] = {} # Store paths of saved images {variable: path}
+            if plotting_required and variables_to_process and images_dir:
                  logger.debug(f"Generating plots for {list(variables_to_process.keys())}...")
+                 num_plots_succeeded = 0
                  for variable in variables_to_process.keys():
-                     if variable not in ds_geo.data_vars:
-                          logger.warning(f"Variable '{variable}' not in dataset for plotting. Skipping.")
-                          continue
+                     if variable not in ds_geo.data_vars: continue
                      plot_style = get_plot_style(variable)
-                     if plot_style is None: continue # Error logged by get_plot_style
+                     if plot_style is None: continue
 
                      image_bytes = create_ppi_image(ds_geo, variable, plot_style, watermark_path, watermark_zoom)
                      if image_bytes:
@@ -159,72 +154,115 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
                          try:
                              with open(image_filepath, 'wb') as f: f.write(image_bytes)
                              logger.info(f"Saved plot: {image_filepath}")
-                             local_plots_succeeded = True # Mark success if at least one saves
+                             saved_image_paths[variable] = image_filepath # Store path
+                             num_plots_succeeded += 1
                          except IOError as e:
-                             logger.error(f"Failed to save plot '{image_filepath}': {e}", exc_info=True)
+                             logger.error(f"Failed to save plot '{image_filepath}': {e}")
+                             overall_success = False # Saving plot is critical if plotting required
                      else:
                          logger.warning(f"Failed to generate image bytes for variable '{variable}'.")
-            else:
-                 logger.debug("Skipping plot generation (no variables or images_dir configured).")
-                 local_plots_succeeded = True # No plots to fail on, counts as success for this step
+                         overall_success = False # Generating plot is critical if required
 
-        # --- Handle Scan File Based on Mode ---
-        moved_filepath = None 
-        move_attempted = False
-        move_succeeded = True # Default to true if move not attempted
+                 # Check if at least one plot succeeded if plotting was the goal
+                 local_plots_succeeded = num_plots_succeeded > 0
+                 if plotting_required and not local_plots_succeeded:
+                     logger.error("Plotting was required, but failed to generate/save any plots.")
+                     overall_success = False # Set failure flag
 
-        if scan_upload_mode == 'standard':
-            logger.info("Mode 'standard': Handling local move and potential FTP queueing.")
+            elif not plotting_required:
+                 logger.debug("Skipping plot generation as not required by config.")
+                 local_plots_succeeded = True # Not required = success for this step
+
+        # --- Handle Scan File ---
+        moved_filepath = filepath # Default to original path
+        move_succeeded = True
+
+        # Only move if NOT in 'ftp_only' mode for scans
+        if scan_upload_mode != 'ftp_only':
             if move_local_in_standard and output_dir:
-                move_attempted = True
                 logger.debug(f"Attempting to move scan file: {filepath} -> {output_dir}")
                 try:
-                    moved_filepath = move_processed_file(filepath, output_dir)
-                    if moved_filepath: logger.info(f"Moved scan file to: {moved_filepath}")
-                    else: move_succeeded = False; logger.error(f"Failed to move scan file locally: {filepath}")
+                    moved_path_result = move_processed_file(filepath, output_dir)
+                    if moved_path_result:
+                        moved_filepath = moved_path_result
+                        logger.info(f"Moved scan file to: {moved_filepath}")
+                    else:
+                        move_succeeded = False
+                        overall_success = False # Failed to move when expected
+                        logger.error(f"Failed to move scan file locally: {filepath}")
                 except Exception as move_err:
-                    move_succeeded = False; logger.error(f"Error moving source file {filepath}: {move_err}", exc_info=True)
+                    move_succeeded = False
+                    overall_success = False
+                    logger.error(f"Error moving source file {filepath}: {move_err}", exc_info=True)
             else:
-                 logger.debug(f"Local move is disabled or output_dir not set. Using original path for FTP: {filepath}")
-                 moved_filepath = filepath # Use original path if not moved
+                logger.debug("Local move is disabled or output_dir not set (in standard/disabled mode).")
+        else:
+            logger.debug(f"Scan file local move skipped due to scan_upload_mode='ftp_only'.")
 
-            # Queue for FTP if enabled AND local plotting succeeded AND (move succeeded OR wasn't attempted)
-            if local_plots_succeeded and move_succeeded and upload_in_standard_mode and moved_filepath:
-                 logger.info(f"Queueing processed scan file for FTP upload: {moved_filepath}")
-                 queueing_succeeded = True
-                 for server_config in ftp_servers:
-                      if not add_scan_to_queue(moved_filepath, server_config):
-                          queueing_succeeded = False # Log critical add failure
-                 # Informational logging about queue outcome, doesn't affect overall success bool
-                 if not queueing_succeeded: logger.error("Failed to add scan file to FTP queue for one or more servers.")
-            # Return success based on local plotting and moving (if attempted)
-            return local_plots_succeeded and move_succeeded
 
-        elif scan_upload_mode == 'disabled':
-            logger.info("Mode 'disabled': Moving scan file locally if configured.")
-            if move_local_in_standard and output_dir:
-                move_attempted = True
-                logger.debug(f"Attempting to move scan file: {filepath} -> {output_dir}")
-                try:
-                    moved_filepath = move_processed_file(filepath, output_dir)
-                    if moved_filepath: logger.info(f"Moved scan file to: {moved_filepath}")
-                    else: move_succeeded = False; logger.error(f"Failed to move scan file locally: {filepath}")
-                except Exception as move_err:
-                    move_succeeded = False; logger.error(f"Error moving source file {filepath}: {move_err}", exc_info=True)
-            else:
-                logger.debug("Local move is disabled or output_dir not set.")
-            # Return success based on local plotting and moving (if attempted)
-            return local_plots_succeeded and move_succeeded
-
-        else: # Should not be reached if validation is correct
-             logger.error(f"Internal error: Invalid scan_upload_mode '{scan_upload_mode}' reached main processing.")
+        # --- Queueing Logic ---
+        if not overall_success: # Don't queue if critical steps failed
+             logger.warning("Skipping FTP queueing due to previous errors.")
              return False
 
+        scan_queued = False
+        images_queued = False
+
+        # Queue Scan File?
+        if scan_upload_mode == 'ftp_only':
+             # Special case handled earlier if image_mode was disabled.
+             # If image_mode is 'only' or 'also', we process plots first, then queue scan here.
+             logger.info(f"Mode 'ftp_only' (scan): Queuing scan file {filepath} after potential plotting.")
+             scan_queueing_succeeded = True
+             for server_config in ftp_servers:
+                  if not add_scan_to_queue(filepath, server_config):
+                      scan_queueing_succeeded = False # Track critical add failure
+             if not scan_queueing_succeeded: overall_success = False
+             scan_queued = True
+
+        elif scan_upload_mode == 'standard' and upload_scans_in_standard_mode and move_succeeded:
+             logger.info(f"Mode 'standard' (scan): Queuing scan file {moved_filepath}")
+             scan_queueing_succeeded = True
+             for server_config in ftp_servers:
+                  if not add_scan_to_queue(moved_filepath, server_config):
+                      scan_queueing_succeeded = False
+             if not scan_queueing_succeeded: overall_success = False # Consider if this is critical failure
+             scan_queued = True
+
+        # Queue Image Files?
+        if local_plots_succeeded and saved_image_paths: # Check if plots were actually saved
+            should_queue_images = False
+            if image_upload_mode == 'only':
+                should_queue_images = True
+            elif image_upload_mode == 'also':
+                # Queue if scan is 'ftp_only' OR (scan is 'standard' AND upload_images_in_standard is true)
+                if scan_upload_mode == 'ftp_only' or \
+                   (scan_upload_mode == 'standard' and upload_images_in_standard_mode):
+                    should_queue_images = True
+
+            if should_queue_images:
+                logger.info(f"Queueing {len(saved_image_paths)} generated image(s)...")
+                image_queueing_succeeded = True
+                for variable, img_path in saved_image_paths.items():
+                    for server_config in ftp_servers:
+                        if not add_image_to_queue(img_path, server_config):
+                             image_queueing_succeeded = False # Track critical add failure
+                if not image_queueing_succeeded: overall_success = False
+                images_queued = True
+
+        # --- Final Logging and Return ---
+        if scan_queued: logger.info("Scan file(s) queued for upload.")
+        if images_queued: logger.info("Image file(s) queued for upload.")
+        if not scan_queued and not images_queued and (scan_upload_mode != 'disabled' or image_upload_mode != 'disabled'):
+            logger.debug("No files were queued for upload based on current modes.")
+
+        logger.info(f"Processing finished for {filepath}. Overall success: {overall_success}")
+        return overall_success
+
     except Exception as e:
-        logger.error(f"Unhandled error during standard/disabled processing of {filepath}: {e}", exc_info=True)
+        logger.error(f"Unhandled error during processing of {filepath}: {e}", exc_info=True)
         return False
     finally:
-        # Ensure dataset is closed if it was opened
         if ds is not None:
             try: ds.close()
             except Exception: pass
