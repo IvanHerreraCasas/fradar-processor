@@ -1,0 +1,42 @@
+defaults:
+  # Default map tile source (if none specified per variable)
+  # Example using OSM URL, adjust if you prefer another default
+  # map_tile:
+  #   type: OSM_URL # A custom identifier we'll handle in style.py
+  #   params:
+  #     url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+  #     desired_tile_form: 'RGB' # OSM URL tiles are usually RGB
+
+  # Default watermark zoom factor (can be overridden in app_config.yaml potentially)
+  watermark_zoom: 0.05
+
+styles:
+  # Configuration specific to the 'RATE' variable
+  RATE:
+    # Colormap definition for RATE
+    cmap:
+      type: ListedColormap # Instructs loader to create ListedColormap
+      colors: # List of RGBA values (matching PRECIP_COLORS)
+        - [0.00, 0.00, 0.00, 0.0] # Transparent (index 0, for values < 0.1)
+        - [0.53, 0.81, 0.98, 1.0] # Skyblue (index 1, for 0.1 <= val < 1)
+        - [0.00, 0.00, 1.00, 1.0] # Blue (index 2, for 1 <= val < 5)
+        - [0.00, 1.00, 0.00, 1.0] # Green (index 3, for 5 <= val < 10)
+        - [1.00, 1.00, 0.00, 1.0] # Yellow (index 4, for 10 <= val < 20)
+        - [1.00, 0.65, 0.00, 1.0] # Orange (index 5, for 20 <= val < 50)
+        - [1.00, 0.00, 0.00, 1.0] # Red (index 6, for 50 <= val < 100)
+        - [0.50, 0.00, 0.50, 1.0] # Purple (index 7, for 100 <= val < 200)
+        # Note: BoundaryNorm uses N colors for N+1 bounds.
+        # The color at index `i` applies to the interval bounds[i] <= value < bounds[i+1]
+
+    # Normalization definition for RATE
+    norm:
+      type: BoundaryNorm # Instructs loader to create BoundaryNorm
+      bounds: [0, 0.1, 1, 5, 10, 20, 50, 100, 200] # Matching PRECIP_BOUNDS
+      # 'ncolors' will be derived from the length of cmap.colors
+      # 'clip=False' is the default for BoundaryNorm
+
+    # Map tile definition for RATE
+    map_tile:
+      type: OSM # Instructs loader to create cartopy.io.img_tiles.OSM
+      params:
+        desired_tile_form: 'L' # The specific parameter from your code

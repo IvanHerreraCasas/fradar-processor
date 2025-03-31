@@ -1,0 +1,32 @@
+# Defines the primary mode for handling scan files (.scnx.gz)
+# Options:
+#   'disabled': FTP is completely off. Standard local processing applies (move file).
+#   'standard': Standard local processing (move file) happens first. Then, if 'upload_in_standard_mode' is true, the *moved* file is queued for FTP.
+#   'ftp_only': Scan files are NOT moved locally. They are queued for FTP upload directly from the input directory. Local plot generation may still occur. Local scan file deleted by worker *only* after successful upload.
+scan_upload_mode: 'disabled' # Default: FTP is off
+
+# Controls if scans are queued for FTP when scan_upload_mode is 'standard'.
+upload_in_standard_mode: true # Default: Don't upload in standard mode
+
+# If true, the queue worker will delete the local scan file after a successful FTP upload.
+# Crucial for 'ftp_only' mode. Can be true in 'standard' mode if desired, but be careful.
+delete_local_scan_on_ftp_success: false # Default: Keep local copy
+
+# Path to the SQLite database file for the upload queue.
+# Can be relative (to project root if running from there) or absolute.
+queue_db_path:  # Default location
+
+# Delays (in seconds) between retries for a failed upload task.
+# Worker stops after last retry fails.
+retry_delays_seconds: [60, 300, 600, 1800, 3600, 18000, 86400] # Default delays
+
+# --- List of FTP Server Destinations ---
+servers:
+  # Add server configurations here:
+  # - alias: "backup"
+  #   host: "192.168.1.100"
+  #   user: "radar_backup"
+  #   # Env Var: FTP_PASSWORD_BACKUP_NAS
+  #   remote_scan_dir: "/volume1/radar_archive"
+  #   use_passive: true
+  

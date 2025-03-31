@@ -1,20 +1,52 @@
-
-# Environment
+# --- Python Virtual Environments ---
+# Standard names for virtual environments
+.venv/
 venv/
-.venv
+env/
+ENV/
 
-# yaml files
-config.yaml
-
-# cache
-cache/
+# --- Python Cache & Compiled Files ---
 __pycache__/
+*.py[cod]
+*$py.class
+pytest*
 
-# parse
-argparse
-sys
-yaml
+# --- Application Cache ---
+# Specific cache directory used by the application (e.g., map tiles)
+cache/
 
+# --- Application Data ---
+# Ignore database files (like the SQLite queue)
+*.db
+*.db-journal # SQLite journaling files
 
-# log
+# --- Logs ---
+# Ignore all log files
+log/
 *.log
+*.log.*
+
+# --- Configuration ---
+# Ignore user-specific or sensitive configuration files
+# Keep tracked template/example files using negation (!)
+config/*.yaml
+!config/*.yaml.template
+
+
+# --- Generated Output / Binary Files ---
+*.png
+
+# --- Temporary Files ---
+*.ini # Often used for temporary config or state
+
+# --- IDE / Editor Files ---
+# Ignore common IDE/editor directories and files
+.idea/
+.vscode/
+*.swp
+*~
+
+# Others
+argparse*
+yaml
+sys

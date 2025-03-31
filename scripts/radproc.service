@@ -1,0 +1,50 @@
+[Unit]
+Description=Radar Processor Service (radproc)
+# Start after the network is available, adjust if it needs other services like DBs
+After=network.target
+
+[Service]
+# --- User and Group ---
+User=radprocuser
+Group=radprocuser
+
+# --- Working Directory ---
+# Set to the root directory of your project where .venv, radproc/, config/ etc. reside
+WorkingDirectory=/path/to/your/project_root
+
+# --- Environment Variables (Secure Password Handling) ---
+# Option A: EnvironmentFile (Recommended for multiple vars)
+# Create a file (e.g., /etc/radproc/environment) owned by root, readable only by root/service user (chmod 640)
+# EnvironmentFile=/etc/radproc/environment
+# Content of /etc/radproc/environment:
+# FTP_PASSWORD_PRIMARY_SERVER="your_actual_password_for_primary"
+# FTP_PASSWORD_BACKUP_NAS="your_actual_password_for_backup"
+# Other environment-specific settings if needed
+
+# Option B: Environment (Good for one or two vars, less ideal for secrets)
+Environment="FTP_PASSWORD_PRIMARY_SERVER=your_actual_password_for_primary"
+Environment="FTP_PASSWORD_BACKUP_NAS=your_actual_password_for_backup"
+
+# --- Execution ---
+# Execute the 'run' command using the virtual environment's python
+# Uses absolute paths for robustness
+ExecStart=/path/to/your/project_root/.venv/bin/python -m radproc.cli.main run
+
+# --- Restart Policy ---
+# Restart the service if it fails (e.g., crashes)
+Restart=on-failure
+# Wait 10 seconds before restarting
+RestartSec=10
+
+# --- Logging ---
+# Standard output and error will be captured by journald
+StandardOutput=journal
+StandardError=journal
+
+# --- Shutdown ---
+# How long to wait for the process to shut down gracefully when stopping the service
+TimeoutStopSec=60 # Wait up to 60 seconds (adjust based on worker shutdown time)
+
+[Install]
+# Start the service automatically in the default multi-user runlevel
+WantedBy=multi-user.target
