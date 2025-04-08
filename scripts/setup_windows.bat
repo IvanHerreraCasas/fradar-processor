@@ -16,6 +16,8 @@ set "scripts_dir=%project_path%\scripts" REM Use scripts_dir name consistently
 set "requirements_path=%project_path%\requirements.txt"
 set "log_dir=%project_path%\log" REM Define log dir path
 set "data_dir=%project_path%\data" REM Define data dir (for queue DB)
+set "cache_dir=%project_path%\cache"
+set "anim_tmp_dir=%cache_dir%\animation_tmp"
 
 :: Python module path to run
 set "python_module=radproc.cli.main"
@@ -37,6 +39,8 @@ if not exist "%requirements_path%" (
 if not exist "%log_dir%" mkdir "%log_dir%" || (echo Warning: Failed to create log directory & goto :error)
 if not exist "%data_dir%" mkdir "%data_dir%" || (echo Warning: Failed to create data directory & goto :error)
 if not exist "%scripts_dir%" mkdir "%scripts_dir%" || (echo Warning: Failed to create scripts directory & goto :error)
+if not exist "%cache_dir%" mkdir "%cache_dir%" || (echo Warning: Failed to create base cache directory & goto :error)
+if not exist "%anim_tmp_dir%" mkdir "%anim_tmp_dir%" || (echo Warning: Failed to create animation temp directory & goto :error)
 
 
 :: Create virtual environment if it doesn't exist

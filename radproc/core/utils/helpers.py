@@ -59,6 +59,36 @@ def parse_datetime_from_filename(filename: str) -> Optional[datetime]:
         logger.warning(f"Could not parse extracted datetime string '{date_str}{time_str}' from filename '{filename}'.")
         return None
 
+def parse_datetime_from_image_filename(filename: str) -> Optional[datetime]:
+    """
+    Extracts datetime information from a plot image filename and returns
+    a timezone-aware datetime object assuming the time is UTC.
+
+    Expected format: VAR_ELEV_YYYYMMDD_HHMM.png (e.g., RATE_005_20231027_1530.png)
+
+    Args:
+        filename: The basename of the image file.
+
+    Returns:
+        A timezone-aware UTC datetime object if parsing is successful, otherwise None.
+    """
+    # Regex captures: 1=Variable, 2=ElevationCode, 3=Date(YYYYMMDD), 4=Time(HHMM)
+    match = re.match(r'^([a-zA-Z0-9]+)_(\d{3})_(\d{8})_(\d{4})\.png$', filename, re.IGNORECASE)
+    if not match:
+        logger.debug(f"Image filename '{filename}' did not match expected pattern 'VAR_ELE_YYYYMMDD_HHMM.png'.")
+        return None
+
+    _var, _elev, date_str, time_str = match.groups()
+    try:
+        # Parse date and HHMM time, add :00 for seconds
+        dt_naive = datetime.strptime(f"{date_str}{time_str}00", "%Y%m%d%H%M%S")
+        # Make it timezone-aware UTC
+        dt_aware_utc = dt_naive.replace(tzinfo=timezone.utc)
+        return dt_aware_utc
+    except ValueError:
+        logger.warning(f"Could not parse extracted datetime string '{date_str}{time_str}00' from image filename '{filename}'.")
+        return None
+
 # --- File Operations ---
 
 def move_processed_file(source_filepath: str, processed_base_dir: str) -> Optional[str]:

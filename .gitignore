@@ -14,6 +14,8 @@ pytest*
 # --- Application Cache ---
 # Specific cache directory used by the application (e.g., map tiles)
 cache/
+cache/OSM/
+cache/animation_tmp/
 
 # --- Application Data ---
 # Ignore database files (like the SQLite queue)
@@ -35,6 +37,8 @@ config/*.yaml
 
 # --- Generated Output / Binary Files ---
 *.png
+*.gif
+*.mp4
 
 # --- Temporary Files ---
 *.ini # Often used for temporary config or state

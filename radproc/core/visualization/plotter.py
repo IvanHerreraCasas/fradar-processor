@@ -2,7 +2,7 @@
 
 import logging
 import io
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 import warnings
 import os
 from datetime import datetime, timedelta
@@ -31,6 +31,8 @@ try:
 except ImportError:
     pass  # Assume georeference was done earlier and CRS is in attrs
 
+from ..utils.geo import get_dataset_crs 
+
 logger = logging.getLogger(__name__)
 
 # --- Plotting Function ---
@@ -43,6 +45,7 @@ def create_ppi_image(
     watermark_path: Optional[str] = None,
     watermark_zoom: float = 0.05,
     coverage_radius_km: Optional[float] = 70.0,
+    plot_extent: Optional[Tuple[float, float, float, float]] = None
 ) -> Optional[bytes]:
     """
     Generates a PPI (Plan Position Indicator) plot for a given variable in a dataset.
@@ -55,11 +58,13 @@ def create_ppi_image(
         watermark_path: Optional path to a watermark image file.
         watermark_zoom: Zoom factor for the watermark image.
         coverage_radius_km: Radius in km for the radar coverage circle. Set to None to disable.
+        plot_extent: Optional tuple (LonMin, LonMax, LatMin, LatMax) to override the default plot extent. Coordinates are geographic (PlateCarree).
 
     Returns:
         Bytes representing the generated PNG image, or None if plotting fails.
     """
     fig = None  # Initialize fig to None for proper closing in finally block
+    cartopy_crs_instance = None # Define higher up for use in extent setting
     try:
         # --- Input Validation ---
         if variable not in ds.data_vars:
@@ -93,28 +98,10 @@ def create_ppi_image(
             )
             return None  # Cannot proceed without metadata
 
+        # --- Determine and Convert CRS ---
         try:
-            proj_crs = None
-            # Check common places for CRS info
-            if hasattr(ds, "rio") and ds.rio.crs:
-                proj_crs = ds.rio.crs
-            elif "crs" in ds.attrs:
-                proj_crs = ds.attrs["crs"]
-            elif "crs" in ds[variable].attrs:
-                proj_crs = ds[variable].attrs["crs"]
-            else:
-                try:
-                    # Fallback to xradar function
-                    proj_crs = xradar.georeference.get_crs(ds)
-                except Exception as xradar_crs_err:
-                    logger.warning(
-                        f"Failed to get CRS via xradar.georeference: {xradar_crs_err}"
-                    )
-
-            if proj_crs is None:
-                raise ValueError(
-                    "CRS not found in dataset attributes or via xradar.georeference."
-                )
+            proj_crs = get_dataset_crs(ds)  
+            if proj_crs is None: raise ValueError("CRS not found")
 
             # --- Explicit Conversion to Cartopy Projection ---
             cartopy_crs_instance = None
@@ -252,6 +239,37 @@ def create_ppi_image(
                         "cartopy.feature not available. Adding basic background failed."
                     )
 
+            # +++ Set Extent Logic +++
+            extent_set_successfully = False
+            if plot_extent and len(plot_extent) == 4:
+                try:
+                    logger.debug(f"Setting user-defined plot extent (PlateCarree): {plot_extent}")
+                    ax.set_extent(plot_extent, crs=ccrs.PlateCarree()) # Extent is defined in PlateCarree
+                    extent_set_successfully = True
+                except Exception as extent_err:
+                     logger.warning(f"Failed to apply user-defined extent {plot_extent}: {extent_err}. Using default.")
+                     # Fallback to default logic
+
+            if not extent_set_successfully: # Run default if no user extent or if user extent failed
+                 try:
+                     # Ensure ds has 'x' and 'y' coords before accessing
+                     if 'x' in ds.coords and 'y' in ds.coords and cartopy_crs_instance:
+                         x_min, x_max = ds["x"].min().item(), ds["x"].max().item()
+                         y_min, y_max = ds["y"].min().item(), ds["y"].max().item()
+                         pad_x = 0
+                         pad_y = 0
+                         logger.debug("Setting plot extent based on data x/y coordinates.")
+                         ax.set_extent(
+                             [x_min - pad_x, x_max + pad_x, y_min - pad_y, y_max + pad_y],
+                             crs=cartopy_crs_instance, # Set extent in the DATA's CRS
+                         )
+                     else:
+                          logger.warning("Cannot set default extent: Missing x/y coords or data CRS.")
+                          # Let Cartopy determine extent automatically
+                 except Exception as extent_err:
+                     logger.warning(f"Could not determine data extent from x/y coords: {extent_err}. Using automatic extent.")
+            # +++ End Extent Logic +++
+
             logger.info(f"Attempting to plot variable '{variable}'...")
             #logger.info(
             #    f"Using Cartopy CRS for transform: {cartopy_crs_instance}"
@@ -308,27 +326,6 @@ def create_ppi_image(
                     )
                 except Exception as circle_err:
                     logger.warning(f"Could not draw coverage circle: {circle_err}")
-
-            # --- Set Extent ---
-            # Calculate extent from x/y coordinates if possible, otherwise let Cartopy auto-adjust
-            try:
-                x_min, x_max = ds["x"].min().item(), ds["x"].max().item()
-                y_min, y_max = ds["y"].min().item(), ds["y"].max().item()
-                # Set extent in the data's CRS (cartopy_crs)
-                # Pad the extent slightly for better visuals
-                #pad_x = (x_max - x_min) * 0.05
-                #pad_y = (y_max - y_min) * 0.05
-                pad_x = 0
-                pad_y = 0
-                ax.set_extent(
-                    [x_min - pad_x, x_max + pad_x, y_min - pad_y, y_max + pad_y],
-                    crs=cartopy_crs_instance,
-                )
-            except Exception as extent_err:
-                logger.warning(
-                    f"Could not determine data extent from x/y coords: {extent_err}. Using automatic extent."
-                )
-                # Let Cartopy determine extent automatically based on plotted data
 
             # --- Title ---
             # Include variable display name, elevation, time

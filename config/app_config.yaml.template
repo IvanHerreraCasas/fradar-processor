@@ -19,3 +19,8 @@ input_file_pattern: "*.scnx.gz"
 # --- Behaviour Settings ---
 move_file_after_processing: true # Used in standard mode if FTP is off or mode='disabled
 enable_timeseries_updates: true  # Enable automatic timeseries CSV updates during 'radproc run'?
+
+# --- Animation Settings
+animation_fps: 5                          # Default frames per second for animations
+animation_default_format: ".gif"          # Default output format (e.g., .gif, .mp4) - Extension matters!
+animation_tmp_dir: "cache/animation_tmp"  # Default temporary storage for regenerated frames during animation creation

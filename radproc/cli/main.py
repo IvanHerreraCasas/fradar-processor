@@ -37,6 +37,7 @@ from core.config import load_config, get_setting # Load config early
 from core.file_monitor import start_monitoring
 from core.processor import generate_historical_plots
 from core.analysis import generate_point_timeseries, calculate_accumulation
+from core.visualization.animator import create_animation
 from core.utils.upload_queue import start_worker, stop_worker
 # --- End Core Imports ---
 
@@ -223,6 +224,78 @@ def cli_timeseries(args: argparse.Namespace):
         logger.exception("An error occurred during historical timeseries generation:")
         sys.exit(1) # Exit with error code
 # +++++++++++++++++++++++++++++++++++++++++++++
+
+# +++ CLI Handler for Animation +++
+def cli_animate(args: argparse.Namespace):
+    """Handler for the 'animate' command."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== Starting Animation Generation ===")
+    logger.info(f"Variable: {args.variable}, Elevation: {args.elevation}, Range: {args.start} -> {args.end}")
+    logger.info(f"Output File: {args.output_file}")
+    if args.extent: logger.info(f"Custom Extent: {args.extent}")
+    if args.no_watermark: logger.info("Watermark Disabled.")
+    if args.fps: logger.info(f"Custom FPS: {args.fps}")
+
+    # Validate and parse datetimes
+    dt_format = "%Y%m%d_%H%M"
+    try:
+        start_dt_naive = datetime.strptime(args.start, dt_format)
+        end_dt_naive = datetime.strptime(args.end, dt_format)
+        start_dt_utc = start_dt_naive.replace(tzinfo=timezone.utc)
+        end_dt_utc = end_dt_naive.replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.error(f"Invalid date format for start/end. Please use YYYYMMDD_HHMM.")
+        sys.exit(1)
+
+    if start_dt_utc >= end_dt_utc:
+         logger.error("Start datetime must be before end datetime.")
+         sys.exit(1)
+
+    # Validate elevation format
+    try:
+        elevation_float = float(args.elevation)
+    except ValueError:
+        logger.error(f"Invalid elevation format: '{args.elevation}'. Must be a number.")
+        sys.exit(1)
+
+    # Validate output file extension (basic check)
+    allowed_formats = ['.gif', '.mp4', '.avi', '.mov'] # Add more as supported by imageio/plugins
+    file_format = os.path.splitext(args.output_file)[1].lower()
+    if not file_format or file_format not in allowed_formats:
+         logger.warning(f"Output file format '{file_format}' might not be supported by imageio. Common formats: {allowed_formats}")
+         # Allow proceeding, imageio might handle it or raise an error
+
+    try:
+        # Configuration should already be loaded by main()
+        success = create_animation(
+            variable=args.variable,
+            elevation=elevation_float,
+            start_dt=start_dt_utc,
+            end_dt=end_dt_utc,
+            output_filename=args.output_file,
+            plot_extent=args.extent, # Pass tuple directly or None
+            include_watermark=(not args.no_watermark), # Invert the flag
+            fps=args.fps # Pass optional fps override or None
+            # file_format determined internally by create_animation based on output_filename
+        )
+
+        if success:
+            logger.info(f"Animation generation finished successfully. Output: {args.output_file}")
+        else:
+            logger.error("Animation generation failed. See logs for details.")
+            sys.exit(1) # Exit with error if core function reported failure
+
+    except FileNotFoundError as e:
+         logger.error(f"Error: A required file or directory was not found: {e}")
+         sys.exit(1)
+    except ValueError as e:
+         logger.error(f"Configuration or Value Error: {e}")
+         sys.exit(1)
+    except Exception as e:
+        logger.exception("An unexpected error occurred during animation generation:")
+        sys.exit(1)
+# +++++++++++++++++++++++++++++++++++++++++++++
+
 
 # +++ CLI Handler for Accumulation +++
 def cli_accumulate(args: argparse.Namespace):
@@ -434,6 +507,56 @@ def main():
              "'<timeseries_dir>/<point_name>_<variable>_<interval>_acc.csv'."
     )
     accumulate_parser.set_defaults(func=cli_accumulate)
+    # +++++++++++++++++++++++++++++
+    
+    # +++ 'animate' command +++
+    animate_parser = subparsers.add_parser(
+        "animate",
+        help="Create an animation (GIF/MP4) from generated plot images for a specific variable and elevation.",
+        description="Finds existing plot images within the specified time range, variable, and elevation.\n"
+                    "Optionally regenerates frames if custom extent or no watermark is requested.\n"
+                    "Stitches valid frames into an animation file (GIF, MP4, etc.)."
+    )
+    animate_parser.add_argument(
+        "variable",
+        help="The radar variable name to animate (e.g., 'RATE')."
+    )
+    animate_parser.add_argument(
+        "elevation",
+        type=float, # Expect float input
+        help="The target elevation angle in degrees (e.g., 0.5)."
+    )
+    animate_parser.add_argument(
+        "start",
+        help="Start datetime for animation range (Format: YYYYMMDD_HHMM). Assumed UTC."
+    )
+    animate_parser.add_argument(
+        "end",
+        help="End datetime for animation range (Format: YYYYMMDD_HHMM). Assumed UTC."
+    )
+    animate_parser.add_argument(
+        "output_file",
+        help="Full path for the output animation file (e.g., 'output/rate_anim.gif', 'results/precip.mp4'). Extension determines format."
+    )
+    animate_parser.add_argument(
+        "--extent",
+        nargs=4, # Expect exactly 4 values
+        type=float,
+        metavar=('LONMIN', 'LONMAX', 'LATMIN', 'LATMAX'),
+        help="Set a specific plot extent (geographic coordinates: LonMin LonMax LatMin LatMax). Regenerates frames."
+    )
+    animate_parser.add_argument(
+        "--no-watermark",
+        action='store_true', # Flag, default is False (watermark included)
+        help="Generate animation frames without the configured watermark. Regenerates frames."
+    )
+    animate_parser.add_argument(
+        "--fps",
+        type=int,
+        metavar="FRAMES",
+        help="Frames per second for the animation (overrides 'animation_fps' in config)."
+    )
+    animate_parser.set_defaults(func=cli_animate)
     # +++++++++++++++++++++++++++++
 
     # 4. Parse Arguments
