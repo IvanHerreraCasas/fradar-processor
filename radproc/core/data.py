@@ -269,10 +269,6 @@ def get_filepaths_in_range(base_dir: str, start_dt: datetime, end_dt: datetime) 
                         # If datetime parsed correctly and is within the full start/end range
                         if file_dt and start_dt <= file_dt <= end_dt:
                             matching_files.append((filepath, file_dt))
-                        elif file_dt:
-                            logger.debug(f"File {filename} datetime {file_dt} outside range {start_dt}-{end_dt}")
-                        else:
-                            logger.debug(f"Could not parse datetime for file: {filename}")
 
     except Exception as e:
         logger.error(f"Error scanning directories in {base_dir}: {e}", exc_info=True)

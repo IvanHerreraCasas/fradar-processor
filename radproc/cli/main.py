@@ -11,8 +11,9 @@ import argparse
 import os
 import sys
 import logging
+import pandas as pd
 from logging.handlers import RotatingFileHandler
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Set Agg backend - might be less critical now but safe to keep if CLI might ever trigger plots directly
@@ -35,6 +36,7 @@ sys.path.insert(0, str(project_root))
 from core.config import load_config, get_setting # Load config early
 from core.file_monitor import start_monitoring
 from core.processor import generate_historical_plots
+from core.analysis import generate_point_timeseries, calculate_accumulation
 from core.utils.upload_queue import start_worker, stop_worker
 # --- End Core Imports ---
 
@@ -175,6 +177,127 @@ def cli_reprocess(args: argparse.Namespace):
         logger.exception("An error occurred during reprocessing:")
         sys.exit(1) # Exit with error code
 
+# +++ CLI Handler for Timeseries +++
+def cli_timeseries(args: argparse.Namespace):
+    """Handler for the 'timeseries' command."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== Starting Historical Timeseries Generation ===")
+    logger.info(f"Point: '{args.point_name}', Range: {args.start} -> {args.end}, Variable: {args.variable or 'Default'}")
+
+    # Validate and parse datetimes
+    dt_format = "%Y%m%d_%H%M"
+    try:
+        # Assume naive input, localize to UTC for internal use
+        start_dt_naive = datetime.strptime(args.start, dt_format)
+        end_dt_naive = datetime.strptime(args.end, dt_format)
+        # Make them timezone-aware (UTC)
+        start_dt_utc = start_dt_naive.replace(tzinfo=timezone.utc)
+        end_dt_utc = end_dt_naive.replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.error(f"Invalid date format for start/end. Please use YYYYMMDD_HHMM (e.g., 20231027_1430).")
+        sys.exit(1)
+
+    if start_dt_utc >= end_dt_utc:
+         logger.error("Start datetime must be before end datetime.")
+         sys.exit(1)
+
+    try:
+        # Configuration should already be loaded by main()
+        # Call the core historical generation function
+        generate_point_timeseries(
+            point_name=args.point_name,
+            start_dt=start_dt_utc,
+            end_dt=end_dt_utc,
+            variable_override=args.variable # Pass optional variable override
+        )
+        logger.info("Historical timeseries generation finished.")
+    except FileNotFoundError as e:
+         # Catch specific errors that might be helpful to the user
+         logger.error(f"Error: A required file or directory was not found: {e}")
+         sys.exit(1)
+    except ValueError as e:
+         # Catch potential value errors (e.g., point not found in config)
+         logger.error(f"Configuration or Value Error: {e}")
+         sys.exit(1)
+    except Exception as e:
+        logger.exception("An error occurred during historical timeseries generation:")
+        sys.exit(1) # Exit with error code
+# +++++++++++++++++++++++++++++++++++++++++++++
+
+# +++ CLI Handler for Accumulation +++
+def cli_accumulate(args: argparse.Namespace):
+    """Handler for the 'accumulate' command."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== Starting Precipitation Accumulation ===")
+    logger.info(f"Point: '{args.point_name}', Range: {args.start} -> {args.end}, Interval: {args.interval}, Variable: {args.variable or 'RATE'}")
+
+    # Validate interval string using pandas
+    try:
+        pd.Timedelta(args.interval) # Check if it's a valid frequency/offset alias
+        # Or potentially: pd.tseries.frequencies.to_offset(args.interval) # More strict frequency check
+    except ValueError:
+        logger.error(f"Invalid accumulation interval format: '{args.interval}'. Use Pandas frequency string (e.g., '1H', '15min', '1D', '6H').")
+        sys.exit(1)
+
+    # Validate and parse datetimes
+    dt_format = "%Y%m%d_%H%M"
+    try:
+        start_dt_naive = datetime.strptime(args.start, dt_format)
+        end_dt_naive = datetime.strptime(args.end, dt_format)
+        start_dt_utc = start_dt_naive.replace(tzinfo=timezone.utc)
+        end_dt_utc = end_dt_naive.replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.error(f"Invalid date format for start/end. Please use YYYYMMDD_HHMM.")
+        sys.exit(1)
+
+    if start_dt_utc >= end_dt_utc:
+         logger.error("Start datetime must be before end datetime.")
+         sys.exit(1)
+
+    # Determine output file path
+    output_file = args.output_file # Use provided path if given
+    if not output_file:
+        # Generate default path if not provided
+        timeseries_dir = get_setting('app.timeseries_dir')
+        if not timeseries_dir:
+            logger.error("Configuration Error: 'app.timeseries_dir' must be set to generate default output filename.")
+            sys.exit(1)
+        rate_variable = args.variable or 'RATE' # Need variable for filename
+        default_filename = f"{args.point_name}_{rate_variable}_{args.interval}_acc.csv"
+        output_file = os.path.join(timeseries_dir, default_filename)
+        logger.info(f"Output file not specified, using default: {output_file}")
+
+    try:
+        # Ensure output directory exists before calling core function
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        # Call the core accumulation function
+        success = calculate_accumulation(
+            point_name=args.point_name,
+            start_dt=start_dt_utc,
+            end_dt=end_dt_utc,
+            interval=args.interval,
+            rate_variable=(args.variable or 'RATE'), # Pass the determined rate variable
+            output_file_path=output_file
+        )
+
+        if success:
+            logger.info(f"Precipitation accumulation finished successfully. Output: {output_file}")
+        else:
+            logger.error("Precipitation accumulation failed. See previous logs for details.")
+            sys.exit(1) # Exit with error if core function reported failure
+
+    except FileNotFoundError as e:
+         logger.error(f"Error: A required file or directory was not found: {e}")
+         sys.exit(1)
+    except ValueError as e:
+         logger.error(f"Configuration or Value Error: {e}")
+         sys.exit(1)
+    except Exception as e:
+        logger.exception("An unexpected error occurred during precipitation accumulation:")
+        sys.exit(1)
+# ++++++++++++++++++++++++++++++++++++
+
 # --- End CLI Command Functions ---
 
 
@@ -189,7 +312,7 @@ def main():
         sys.exit(1)
 
     # 2. Setup Logging using config values
-    log_file = get_setting('app.log_file', 'logs/radproc_default.log')
+    log_file = get_setting('app.log_file', 'log/radproc_default.log')
     log_level_file = get_setting('app.log_level_file', 'DEBUG')
     log_level_console = get_setting('app.log_level_console', 'INFO')
     log_max_bytes = get_setting('app.log_max_bytes', 5*1024*1024)
@@ -245,6 +368,73 @@ def main():
         help="End datetime for reprocessing range (Format: YYYYMMDD_HHMM, e.g., '20231027_1200')."
     )
     reprocess_parser.set_defaults(func=cli_reprocess) # Link to the handler function
+
+    # +++ 'timeseries' command +++
+    timeseries_parser = subparsers.add_parser(
+        "timeseries",
+        help="Generate/update historical timeseries CSV for a specific point.",
+        description="Scans processed radar files within the output directory for a given date range\n"
+                    "and extracts data for the specified point (defined in points.yaml).\n"
+                    "Appends new data to the corresponding CSV file in the configured timeseries directory,\n"
+                    "avoiding duplicate entries based on timestamps. Useful for backfilling history."
+    )
+    timeseries_parser.add_argument(
+        "point_name",
+        help="The unique 'name' of the point defined in config/points.yaml."
+    )
+    timeseries_parser.add_argument(
+        "start",
+        help="Start datetime for processing range (Format: YYYYMMDD_HHMM, e.g., '20231027_1000'). Assumed UTC."
+    )
+    timeseries_parser.add_argument(
+        "end",
+        help="End datetime for processing range (Format: YYYYMMDD_HHMM, e.g., '20231027_1200'). Assumed UTC."
+    )
+    timeseries_parser.add_argument(
+        "--variable", # Optional argument
+        metavar="VAR_NAME",
+        help="Extract data for this specific variable (e.g., 'RATE', 'DBZH'), overriding the default in points.yaml."
+    )
+    timeseries_parser.set_defaults(func=cli_timeseries) # Link to the handler function
+
+    # +++ 'accumulate' command +++
+    accumulate_parser = subparsers.add_parser(
+        "accumulate",
+        help="Calculate accumulated precipitation for a point over a time range.",
+        description="Reads an existing RATE timeseries CSV for a point, calculates accumulated\n"
+                    "precipitation over a specified interval (e.g., '1H', '15min'), and saves\n"
+                    "the results to a new CSV file. Overwrites the output file if it exists."
+    )
+    accumulate_parser.add_argument(
+        "point_name",
+        help="The unique 'name' of the point (defined in config/points.yaml)."
+    )
+    accumulate_parser.add_argument(
+        "start",
+        help="Start datetime for analysis range (Format: YYYYMMDD_HHMM). Assumed UTC."
+    )
+    accumulate_parser.add_argument(
+        "end",
+        help="End datetime for analysis range (Format: YYYYMMDD_HHMM). Assumed UTC."
+    )
+    accumulate_parser.add_argument(
+        "interval",
+        help="Accumulation interval (Pandas frequency string, e.g., '1H', '15min', '1D', '6H')."
+    )
+    accumulate_parser.add_argument(
+        "--variable",
+        metavar="RATE_VAR",
+        default="RATE", # Default to RATE
+        help="Specify the input rate variable name (default: RATE)."
+    )
+    accumulate_parser.add_argument(
+        "--output-file",
+        metavar="PATH",
+        help="Specify the full path for the output CSV file. If omitted, defaults to\n"
+             "'<timeseries_dir>/<point_name>_<variable>_<interval>_acc.csv'."
+    )
+    accumulate_parser.set_defaults(func=cli_accumulate)
+    # +++++++++++++++++++++++++++++
 
     # 4. Parse Arguments
     args = parser.parse_args()

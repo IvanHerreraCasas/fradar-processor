@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional
 
 from core.config import get_setting # Import config access
@@ -31,33 +31,30 @@ def parse_date_from_dirname(dir_name: str) -> Optional[date]:
 
 def parse_datetime_from_filename(filename: str) -> Optional[datetime]:
     """
-    Extracts datetime information from a radar scan filename.
-    # Updated assumption: Looks for _YYYYMMDD_HHMMSS_ pattern anywhere in the name.
-    # Example: 'prefix_YYYYMMDD_HHMMSS_suffix.extension'
-    # Example: '2037_20250226_000200_004.scnx.gz'
+    Extracts datetime information from a radar scan filename and returns
+    a timezone-aware datetime object assuming the time is UTC.
+
+    Looks for _YYYYMMDD_HHMMSS_ pattern anywhere in the name.
+    Example: 'prefix_YYYYMMDD_HHMMSS_suffix.extension'
 
     Args:
         filename: The basename of the file.
 
     Returns:
-        A datetime object if parsing is successful, otherwise None.
+        A timezone-aware UTC datetime object if parsing is successful, otherwise None.
     """
-    # --- MODIFIED REGEX ---
-    # Looks for the date and time codes separated by underscores,
-    # allowing anything before and after within the filename.
     match = re.search(r'_(\d{8})_(\d{6})_', filename)
-    # --- END MODIFICATION ---
-
     if not match:
         logger.debug(f"Filename '{filename}' did not match expected datetime pattern '_YYYYMMDD_HHMMSS_'.")
         return None
 
     date_str, time_str = match.groups()
     try:
-        # Combine and parse the extracted date and time strings
-        dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
-        logger.debug(f"Parsed datetime {dt} from filename '{filename}'")
-        return dt
+        # Parse as naive datetime first
+        dt_naive = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
+        # Make it timezone-aware by assigning UTC timezone info
+        dt_aware_utc = dt_naive.replace(tzinfo=timezone.utc) # <<< Attach UTC timezone
+        return dt_aware_utc
     except ValueError:
         logger.warning(f"Could not parse extracted datetime string '{date_str}{time_str}' from filename '{filename}'.")
         return None

@@ -7,14 +7,17 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 # --- Core Imports ---
+# Use get_config in addition to get_setting
 from core.config import get_setting, get_config
-from core.data import read_scan # Keep get_filepaths_in_range for historical
+from core.data import read_scan, get_filepaths_in_range # Keep get_filepaths_in_range for historical
 from core.utils.geo import georeference_dataset
-from core.utils.helpers import move_processed_file # Keep parse_datetime_from_filename indirectly
+from core.utils.helpers import move_processed_file
 from core.visualization.style import get_plot_style
 from core.visualization.plotter import create_ppi_image
-from core.utils.upload_queue import add_scan_to_queue, add_image_to_queue 
-# --- End Core Imports ---
+from core.utils.upload_queue import add_scan_to_queue, add_image_to_queue
+# +++ Import the new timeseries update function +++
+from core.analysis import update_timeseries_for_scan
+# +++++++++++++++++++++++++++++++++++++++++++++++++
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> bool:
     """
     Processes a single raw radar scan file based on configured modes for scans and images.
+    Also triggers automatic timeseries updates if enabled.
 
     Args:
         filepath: The absolute path to the raw radar scan file (.scnx.gz).
@@ -31,29 +35,22 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
     Returns:
         True if essential steps succeeded (read, plot saving if needed, queuing if needed), False otherwise.
     """
+    # --- Configuration Loading and Initial Setup ---
     if config is None: config = get_config()
     logger.info(f"Starting processing for scan: {filepath}")
 
-    # --- Get Relevant Configuration ---
-    # Scan FTP settings
     scan_upload_mode = get_setting('ftp.scan_upload_mode', 'disabled')
-    upload_scans_in_standard_mode = get_setting('ftp.upload_scans_in_standard_mode', False) # Renamed for clarity
-    # Image FTP settings (NEW)
+    upload_scans_in_standard_mode = get_setting('ftp.upload_scans_in_standard_mode', False)
     image_upload_mode = get_setting('ftp.image_upload_mode', 'disabled')
     upload_images_in_standard_mode = get_setting('ftp.upload_images_in_standard_mode', False)
-
-    # General FTP settings
     ftp_servers = get_setting('ftp.servers', [])
-
-    # App settings
     variables_to_process: Dict[str, str] = get_setting('app.variables_to_process', {})
     images_dir: Optional[str] = get_setting('app.images_dir')
     output_dir: Optional[str] = get_setting('app.output_dir')
     watermark_path: Optional[str] = get_setting('app.watermark_path')
     move_local_in_standard = get_setting('app.move_file_after_processing', True)
-
-    # Style settings
     watermark_zoom: float = get_setting('styles.defaults.watermark_zoom', 0.05)
+    enable_timeseries = get_setting('app.enable_timeseries_updates', False)
 
     # --- Determine if Plotting is Needed ---
     # Plotting is required if images need saving locally OR if images need uploading
@@ -103,42 +100,77 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
 
     # --- Main Processing Logic (Reading, Plotting, Moving, Queuing) ---
     ds = None
+    ds_geo = None # Keep track of the georeferenced dataset
     local_plots_succeeded = False # Assume false unless plots generated and saved
     overall_success = True      # Assume true, set to false on critical failures
 
     try:
-        # --- Reading and Plotting (if required) ---
-        if plotting_required or scan_upload_mode != 'ftp_only': # Read data if plotting or standard processing
+        # --- Reading and Georeferencing (Required for plotting, timeseries, or standard mode) ---
+        # Determine if we absolutely need to read the data
+        needs_data_read = plotting_required or enable_timeseries or scan_upload_mode != 'ftp_only'
+        if needs_data_read:
             logger.debug(f"Reading scan data for variables: {list(variables_to_process.keys())}")
+            # Determine variables needed (for plotting and potentially timeseries defaults)
+            vars_needed = set(variables_to_process.keys()) if variables_to_process else set()
+            if enable_timeseries:
+                 # Add default variables from points config if needed for index finding/extraction
+                 all_points = get_setting('points_config.points', [])
+                 for p in all_points:
+                     if isinstance(p, dict) and p.get('variable'):
+                         vars_needed.add(p['variable'])
+
+            if not vars_needed:
+                # If plotting/timeseries enabled but no variables identified, log warning
+                 if plotting_required or enable_timeseries:
+                     logger.warning("No variables identified for plotting or timeseries extraction.")
+                 # Can still proceed if only moving/uploading scan file in standard mode
             vars_to_read = list(variables_to_process.keys()) if variables_to_process else None
             if not vars_to_read and plotting_required: # Should have been caught earlier, but double-check
                  logger.error("Cannot proceed: Plotting required but no variables configured.")
                  return False
 
             ds = read_scan(filepath, variables=vars_to_read)
-            if ds is None: return False # Critical failure
+            if ds is None:
+                logger.error(f"Failed to read scan file: {filepath}")
+                return False # Critical failure
 
             logger.debug("Georeferencing dataset...")
             ds_geo = georeference_dataset(ds)
+            # Basic check for successful georeferencing
             if 'x' not in ds_geo.coords or 'y' not in ds_geo.coords:
-                 logger.warning("Dataset potentially missing georeference coordinates ('x','y').")
+                 logger.warning("Georeferencing may have failed (missing x/y coords). Plotting/Timeseries might fail.")
 
-            # Extract Metadata
-            try:
-                dt_np = np.datetime64(ds_geo['time'].values.item())
-                dt = dt_np.astype(datetime)
-                elevation = float(ds_geo['elevation'].values.item())
-                date_str = dt.strftime("%Y%m%d")
-                datetime_file_str = dt.strftime("%Y%m%d_%H%M")
-                elevation_code = f"{int(elevation * 100):03d}"
-            except Exception as meta_err:
-                logger.error(f"Failed to extract metadata: {meta_err}", exc_info=True)
-                return False
+            # +++ Automatic Timeseries Update +++
+            # Perform this *after* georeferencing but *before* potential file move
+            if enable_timeseries and ds_geo is not None:
+                logger.info("Triggering automatic timeseries update...")
+                try:
+                    update_timeseries_for_scan(ds_geo)
+                except Exception as ts_update_err:
+                    # Log error but DO NOT let it stop the main processing workflow
+                    logger.error(f"Error during automatic timeseries update: {ts_update_err}", exc_info=True)
+                logger.info("Automatic timeseries update attempt finished.")
+            elif enable_timeseries:
+                 logger.warning("Skipping timeseries update because georeferenced dataset is invalid.")
+            # ++++++++++++++++++++++++++++++++++++
+
+            
 
             # Generate and Save Plots Locally (if required)
             saved_image_paths: Dict[str, str] = {} # Store paths of saved images {variable: path}
-            if plotting_required and variables_to_process and images_dir:
-                 logger.debug(f"Generating plots for {list(variables_to_process.keys())}...")
+            if plotting_required and variables_to_process and images_dir and ds_geo is not None:
+                 logger.debug(f"Generating plots for {list(variables_to_process.keys())}...")# Extract Metadata
+                 try:
+                     dt_np = np.datetime64(ds_geo['time'].values.item())
+                     dt = dt_np.astype(datetime)
+                     elevation = float(ds_geo['elevation'].values.item())
+                     date_str = dt.strftime("%Y%m%d")
+                     datetime_file_str = dt.strftime("%Y%m%d_%H%M")
+                     elevation_code = f"{int(elevation * 100):03d}"
+                 except Exception as meta_err:
+                     logger.error(f"Failed to extract metadata: {meta_err}", exc_info=True)
+                     return False
+                 
                  num_plots_succeeded = 0
                  for variable in variables_to_process.keys():
                      if variable not in ds_geo.data_vars: continue
