@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, date, timezone
 from typing import Optional
 
-from core.config import get_setting # Import config access
+from ..config import get_setting # Import config access
 
 logger = logging.getLogger(__name__)
 

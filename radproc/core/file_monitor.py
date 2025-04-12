@@ -19,8 +19,8 @@ except ImportError:
     print("Please install it: pip install watchdog")
 
 # Import processor function and config access
-from core.processor import process_new_scan
-from core.config import get_config, get_setting
+from .processor import process_new_scan
+from .config import get_config, get_setting
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)

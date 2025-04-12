@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt # For getting standard cmaps
 import cartopy.io.img_tiles as cimgt
 
 # Import config access function
-from core.config import get_setting
+from ..config import get_setting
 
 logger = logging.getLogger(__name__)
 

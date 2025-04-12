@@ -9,9 +9,9 @@ from threading import Lock, Thread
 from typing import Optional, Dict, Any, Tuple, List
 
 # --- Core Imports ---
-from core.config import get_setting # Need access to main config
-from core.utils.secrets import get_ftp_password
-from core.utils.ftp_client import upload_scan_file, upload_image_file
+from ..config import get_setting # Need access to main config
+from ..utils.secrets import get_ftp_password
+from ..utils.ftp_client import upload_scan_file, upload_image_file
 
 logger = logging.getLogger(__name__)
 
