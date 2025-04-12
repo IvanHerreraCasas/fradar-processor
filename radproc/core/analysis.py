@@ -369,7 +369,7 @@ def generate_point_timeseries(
     start_dt: datetime,
     end_dt: datetime,
     variable_override: Optional[str] = None
-):
+) -> Optional[str]:
     """
     Generates or updates a timeseries CSV for a specific point and elevation,
     processing only scans within the requested time range whose data is not
@@ -386,7 +386,7 @@ def generate_point_timeseries(
 
     # 1. Get Configuration
     point_config = get_point_config(point_name)
-    if not point_config: return False
+    if not point_config: return None
 
     target_lat = point_config['latitude']
     target_lon = point_config['longitude']
@@ -399,7 +399,7 @@ def generate_point_timeseries(
     processed_scan_dir = get_setting('app.output_dir')
     if not timeseries_dir or not processed_scan_dir:
         logger.error("Timeseries generation failed: 'timeseries_dir' or 'output_dir' not configured.")
-        return False
+        return None
     os.makedirs(timeseries_dir, exist_ok=True)
 
     csv_path = os.path.join(timeseries_dir, f"{point_name}_{variable_to_extract}.csv")
@@ -489,7 +489,7 @@ def generate_point_timeseries(
                     # If indices cannot be determined, stop processing
                     logger.error(f"Could not determine valid indices for point '{point_name}'. Aborting timeseries update.")
                     if ds: ds.close()
-                    return False # Signal failure
+                    return None # Signal failure
 
             # Extract value if indices are known
             if cached_indices:
@@ -553,13 +553,13 @@ def generate_point_timeseries(
             logger.info("Successfully appended new data.")
         except Exception as e:
             logger.error(f"Failed to append data to {csv_path}: {e}", exc_info=True)
-            return False # Appending failed, signal error
+            return None # Appending failed, signal error
     else:
         logger.info("No new data points to append for the specified range.")
 
     logger.info(f"Timeseries generation/update finished for point '{point_name}'.")
     logger.info(f"Files Scanned: {len(filepaths_tuples)}, Scans Processed: {processed_scan_count}, New Data Points Added: {added_data_count}, Errors: {error_count}")
-    return True # Signal success
+    return csv_path # Signal success
     
 def calculate_accumulation(
     point_name: str,
