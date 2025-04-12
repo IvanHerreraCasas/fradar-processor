@@ -107,6 +107,8 @@ def _setup_logger(
              print(f"ERROR: Failed to set up console logger: {e}", file=sys.stderr)
 
 
+        logging.getLogger('PIL').setLevel(logging.WARNING)
+
         # --- Initial Log Message ---
         # Use the root logger directly after setup
         root_logger.info(f"Logging initialized.")
