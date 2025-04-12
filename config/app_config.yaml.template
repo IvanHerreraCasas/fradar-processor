@@ -24,3 +24,4 @@ enable_timeseries_updates: true  # Enable automatic timeseries CSV updates durin
 animation_fps: 5                          # Default frames per second for animations
 animation_default_format: ".gif"          # Default output format (e.g., .gif, .mp4) - Extension matters!
 animation_tmp_dir: "cache/animation_tmp"  # Default temporary storage for regenerated frames during animation creation
+animation_output_dir: "animations"        # Default relative path for saving animations
