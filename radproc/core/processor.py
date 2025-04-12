@@ -5,6 +5,7 @@ import logging
 import numpy as np
 from datetime import datetime
 from typing import Dict, Any, Optional
+import shutil
 
 # --- Core Imports ---
 # Use get_config in addition to get_setting
@@ -51,6 +52,7 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
     move_local_in_standard = get_setting('app.move_file_after_processing', True)
     watermark_zoom: float = get_setting('styles.defaults.watermark_zoom', 0.05)
     enable_timeseries = get_setting('app.enable_timeseries_updates', False)
+    realtime_dir = get_setting('app.realtime_image_dir')
 
     # --- Determine if Plotting is Needed ---
     # Plotting is required if images need saving locally OR if images need uploading
@@ -103,6 +105,7 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
     ds_geo = None # Keep track of the georeferenced dataset
     local_plots_succeeded = False # Assume false unless plots generated and saved
     overall_success = True      # Assume true, set to false on critical failures
+    saved_image_paths: Dict[str, str] = {} # Store paths of saved images {variable: path}
 
     try:
         # --- Reading and Georeferencing (Required for plotting, timeseries, or standard mode) ---
@@ -188,6 +191,24 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
                              logger.info(f"Saved plot: {image_filepath}")
                              saved_image_paths[variable] = image_filepath # Store path
                              num_plots_succeeded += 1
+                             
+                             # Copy to Realtime Directory +++
+                             # Do this immediately after successful save
+                             if realtime_dir:
+                                 realtime_filename = f"realtime_{variable}_{elevation_code}.png" # Construct filename
+                                 realtime_filepath = os.path.join(realtime_dir, realtime_filename)
+                                 realtime_filepath_tmp = f"{realtime_filepath}.{os.getpid()}.tmp" # Temp name
+                                 try:
+                                     os.makedirs(realtime_dir, exist_ok=True) # Ensure target dir exists
+                                     shutil.copyfile(image_filepath, realtime_filepath_tmp) # Copy to temp
+                                     os.replace(realtime_filepath_tmp, realtime_filepath)    # Atomic replace
+                                     logger.debug(f"Updated realtime image: {realtime_filepath}")
+                                 except OSError as copy_err:
+                                     logger.error(f"Failed to copy/replace realtime image {realtime_filepath}: {copy_err}")
+                                     # Cleanup temp file if replace failed
+                                     if os.path.exists(realtime_filepath_tmp):
+                                         try: os.remove(realtime_filepath_tmp)
+                                         except OSError: pass # Ignore cleanup error
                          except IOError as e:
                              logger.error(f"Failed to save plot '{image_filepath}': {e}")
                              overall_success = False # Saving plot is critical if plotting required
