@@ -605,9 +605,21 @@ def calculate_accumulation(
 
     point_config = get_point_config(point_name)
     if not point_config: return False # Error logged by getter
-
-    # Construct source path
-    source_csv_path = os.path.join(timeseries_dir, f"{point_name}_{rate_variable}.csv")
+    
+    # --- b. Ensure source data is up to date ---
+    source_csv_path= generate_point_timeseries(
+        point_name=point_name,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        variable_override=rate_variable
+    )
+    
+    if not source_csv_path:
+        logger.error(f"Failed to generate or locate source timeseries data for '{point_name}' in the required range. Cannot calculate accumulation.")
+        return False # Explicitly return False to signal failure
+    if not os.path.exists(source_csv_path):
+        logger.error(f"Source timeseries file path returned ('{source_csv_path}') but file does not exist. Cannot calculate accumulation.")
+        return False # Also signal failure if the file doesn't exist
 
     # --- d. Read Source Data ---
     logger.info(f"Reading source data from: {source_csv_path}")
@@ -618,7 +630,7 @@ def calculate_accumulation(
         # Optionally create empty output file with header?
         # metadata = {... gather metadata ...}
         # write_timeseries_csv(output_file_path, pd.DataFrame(columns=['timestamp', f'precip_acc_{...}']), metadata)
-        return True
+        return False
 
     if rate_variable not in df_rate.columns:
         logger.error(f"Rate variable column '{rate_variable}' not found in source file: {source_csv_path}")
@@ -632,7 +644,7 @@ def calculate_accumulation(
 
     if df_filtered.empty:
         logger.info(f"No rate data found within the specified accumulation range ({start_dt} to {end_dt}).")
-        return True
+        return False
 
     logger.info(f"Using {len(df_filtered)} rate data points for accumulation calculation.")
 
