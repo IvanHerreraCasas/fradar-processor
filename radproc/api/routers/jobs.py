@@ -2,6 +2,7 @@
 import io
 import os
 import logging
+import uuid
 import pandas as pd
 from fastapi import APIRouter, HTTPException, status, Body, Depends, Query, Response
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
@@ -21,7 +22,7 @@ from ..schemas.jobs import (
     JobStatusResponse,
     JobStatus,
 )
-from ..dependencies import get_core_config
+from ..dependencies import get_core_config, get_api_job_output_dir
 from ...core.config import get_point_config, get_setting
 from ...core.utils.csv_handler import read_timeseries_csv
 
@@ -97,7 +98,7 @@ async def queue_timeseries_job(
 )
 async def queue_accumulation_job(
     request_body: AccumulationJobRequest = Body(...),
-    _config: dict = Depends(get_core_config),
+    job_output_dir: str = Depends(get_api_job_output_dir)
 ):
     """
     Submits a background job to calculate accumulated precipitation for a point.
@@ -107,7 +108,6 @@ async def queue_accumulation_job(
     end_dt = request_body.end_dt
     interval = request_body.interval
     rate_variable = request_body.rate_variable or "RATE" # Use default if None
-    output_file = request_body.output_file
 
     logger.info(f"Received request to queue accumulation job for point: '{point_name}', Interval: {interval}")
 
@@ -118,24 +118,17 @@ async def queue_accumulation_job(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Start datetime must be before end datetime.")
     # Interval format validated by Pydantic
 
-    # Determine default output path if not provided
-    if not output_file:
-        timeseries_dir = get_setting('app.timeseries_dir')
-        if not timeseries_dir:
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Timeseries directory not configured for default output path.")
-        safe_interval = interval.replace(':','-').replace('/','_') # Make interval filename-safe
-        default_filename = f"{point_name}_{rate_variable}_{safe_interval}_acc.csv"
-        output_file = os.path.join(timeseries_dir, default_filename)
-        logger.info(f"Using default output file for accumulation job: {output_file}")
-
-    # Ensure output directory exists before queueing (task might fail otherwise)
+    # --- Generate Server-Side Output Path ---
     try:
-         output_dir = os.path.dirname(output_file)
-         if output_dir: os.makedirs(output_dir, exist_ok=True)
-    except OSError as e:
-         logger.error(f"Cannot create output directory {output_dir} for accumulation job: {e}")
-         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Cannot create output directory.")
-
+        safe_interval = interval.replace(':','-').replace('/','_') # Make interval filename-safe
+        unique_id = uuid.uuid4() # Generate unique ID
+        filename = f"{point_name}_{rate_variable}_{safe_interval}_acc_{unique_id}.csv"
+        server_output_path = os.path.join(job_output_dir, filename)
+        logger.info(f"Generated output path for accumulation job: {server_output_path}")
+        # No need to os.makedirs here, dependency handles base dir
+    except Exception as e:
+        logger.error(f"Failed to generate output path for accumulation job: {e}", exc_info=True)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate output path.")
     # --- Enqueue Task ---
     try:
         task = run_calculate_accumulation(
@@ -144,7 +137,7 @@ async def queue_accumulation_job(
             end_dt.isoformat(),
             interval,
             rate_variable,
-            output_file # Pass the determined output path
+            server_output_path # Pass the determined output path
         )
         task_id = task.id
         logger.info(f"Accumulation job queued successfully for point '{point_name}'. Task ID: {task_id}")
@@ -166,7 +159,7 @@ async def queue_accumulation_job(
 )
 async def queue_animation_job(
     request_body: AnimationJobRequest = Body(...),
-    _config: dict = Depends(get_core_config),
+    job_output_dir: str = Depends(get_api_job_output_dir)
 ):
     """
     Submits a background job to generate an animation from plot images.
@@ -175,25 +168,32 @@ async def queue_animation_job(
     elevation=request_body.elevation
     start_dt=request_body.start_dt
     end_dt=request_body.end_dt
-    output_file=request_body.output_file
+    output_format=request_body.output_format
     extent=request_body.extent # Will be tuple or None
     no_watermark=request_body.no_watermark or False # Default to False
     fps=request_body.fps
 
-    logger.info(f"Received request to queue animation job: Var='{variable}', Elev={elevation}, Output='{output_file}'")
+    logger.info(f"Received request to queue animation job: Var='{variable}', Elev={elevation}, Output_format='{output_format}'")
 
     # --- Validation ---
     if start_dt >= end_dt:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Start datetime must be before end datetime.")
     # Output file extension validated loosely by Pydantic
 
-    # Ensure output directory exists before queueing
+    # --- Generate Server-Side Output Path ---
     try:
-         output_dir = os.path.dirname(output_file)
-         if output_dir: os.makedirs(output_dir, exist_ok=True)
-    except OSError as e:
-         logger.error(f"Cannot create output directory {output_dir} for animation job: {e}")
-         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Cannot create output directory.")
+        # Format dates compactly for filename (optional)
+        start_str = start_dt.strftime('%Y%m%d%H%M')
+        end_str = end_dt.strftime('%Y%m%d%H%M')
+        unique_id = uuid.uuid4()
+        # Construct filename with user's desired format/extension
+        filename = f"{variable}_{elevation}_{start_str}_{end_str}_anim_{unique_id}{output_format}"
+        server_output_path = os.path.join(job_output_dir, filename)
+        logger.info(f"Generated output path for animation job: {server_output_path}")
+        # No need to os.makedirs here
+    except Exception as e:
+        logger.error(f"Failed to generate output path for animation job: {e}", exc_info=True)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate output path.")
 
     # --- Enqueue Task ---
     try:
@@ -205,7 +205,7 @@ async def queue_animation_job(
             elevation,
             start_dt.isoformat(),
             end_dt.isoformat(),
-            output_file,
+            server_output_path,
             extent_list, # Pass list
             not no_watermark, # Pass include_watermark flag
             fps

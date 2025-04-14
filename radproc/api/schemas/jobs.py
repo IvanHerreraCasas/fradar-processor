@@ -89,7 +89,6 @@ class AccumulationJobRequest(BaseModel):
     end_dt: datetime = Field(..., description="End datetime for accumulation range (UTC recommended)", example="2023-10-28T00:00:00Z")
     interval: str = Field(..., description="Pandas frequency string for accumulation interval (e.g., '1H', '15min', '1D')", example="1H")
     rate_variable: Optional[str] = Field("RATE", description="Source rate variable name in timeseries CSV", example="RATE")
-    output_file: Optional[str] = Field(None, description="Optional full path for the output CSV. If omitted, defaults to '<timeseries_dir>/<point>_<rate_var>_<interval>_acc.csv'.", example="/data/output/point_A_acc.csv")
 
     # --- Define the validator directly within this class ---
     @field_validator('start_dt', 'end_dt')
@@ -139,7 +138,6 @@ class AccumulationJobRequest(BaseModel):
                 "end_dt": "2023-10-28T00:00:00Z",
                 "interval": "6H",
                 "rate_variable": "RATE",
-                "output_file": None
             }
         }
     }
@@ -150,8 +148,8 @@ class AnimationJobRequest(BaseModel):
     elevation: float = Field(..., description="Target elevation angle in degrees", example=0.5)
     start_dt: datetime = Field(..., description="Start datetime for animation range (UTC recommended)", example="2023-10-27T10:00:00Z")
     end_dt: datetime = Field(..., description="End datetime for animation range (UTC recommended)", example="2023-10-27T12:00:00Z")
-    output_file: str = Field(..., description="Full path for the output animation file (e.g., /data/output/rate_anim.mp4)", example="/data/output/rate_anim.mp4")
     extent: Optional[Tuple[float, float, float, float]] = Field(None, description="Optional plot extent override (LonMin, LonMax, LatMin, LatMax)", example=[-75, -73, 40, 41])
+    output_format: str = Field(..., description="Desired output format extension (e.g., '.mp4', '.gif')", example=".mp4")
     no_watermark: Optional[bool] = Field(False, description="Set true to exclude watermark")
     fps: Optional[int] = Field(None, description="Override default frames per second")
 
@@ -182,17 +180,17 @@ class AnimationJobRequest(BaseModel):
         # Handle other unexpected types if necessary
         raise TypeError("Expected datetime object.")
 
-    @field_validator('output_file')
+    @field_validator('output_format')
     @classmethod
-    def validate_output_extension(cls, v: str) -> str:
-        """Basic check for common animation extensions."""
-        allowed_formats = ['.gif', '.mp4', '.avi', '.mov', '.webm']
-        ext = os.path.splitext(v)[1].lower()
-        if not ext or ext not in allowed_formats:
-             # Just warn, don't raise error, let imageio handle it
-             # print(f"Warning: Animation output file extension '{ext}' might not be supported.")
-             pass
-        return v
+    def validate_output_format(cls, v: str) -> str:
+        """Validate the output format extension."""
+        if not isinstance(v, str) or not v.startswith('.'):
+            raise ValueError("Output format must be a string starting with '.' (e.g., '.mp4', '.gif').")
+        # Optional: Check against a list of known supported formats
+        # supported = ['.mp4', '.gif', '.avi', '.mov', '.webm']
+        # if v.lower() not in supported:
+        #    logger.warning(f"Requested animation format '{v}' may not be supported.")
+        return v.lower() # Ensure lowercase
 
     model_config = {
         "json_schema_extra": {
@@ -201,7 +199,7 @@ class AnimationJobRequest(BaseModel):
                 "elevation": 0.5,
                 "start_dt": "2023-10-27T10:00:00Z",
                 "end_dt": "2023-10-27T12:00:00Z",
-                "output_file": "/data/output/animations/rate_10-12_utc.mp4",
+                "output_format": ".mp4", 
                 "extent": None,
                 "no_watermark": False,
                 "fps": 10

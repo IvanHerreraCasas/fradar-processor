@@ -19,6 +19,7 @@ set "data_dir=%project_path%\data" REM Define data dir (for queue DB)
 set "cache_dir=%project_path%\cache"
 set "anim_tmp_dir=%cache_dir%\animation_tmp"
 set "anim_output_dir=%project_path%\animations"
+set "api_job_output_dir=%project_path%\cache\api_job_outputs"
 
 
 :: Python module path to run
@@ -44,6 +45,7 @@ if not exist "%scripts_dir%" mkdir "%scripts_dir%" || (echo Warning: Failed to c
 if not exist "%cache_dir%" mkdir "%cache_dir%" || (echo Warning: Failed to create base cache directory & goto :error)
 if not exist "%anim_tmp_dir%" mkdir "%anim_tmp_dir%" || (echo Warning: Failed to create animation temp directory & goto :error)
 if not exist "%anim_output_dir%" mkdir "%anim_output_dir%" || (echo Warning: Failed to create default animation output directory & goto :error) 
+if not exist "%api_job_output_dir%" mkdir "%api_job_output_dir%" || (echo Warning: Failed to create API job output directory & goto :error)
 
 :: Create virtual environment if it doesn't exist
 if not exist "%venv_path%" (

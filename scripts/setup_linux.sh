@@ -27,6 +27,7 @@ DATA_DIR="${PROJECT_ROOT}/data" # For queue DB
 CACHE_DIR="${PROJECT_ROOT}/cache" # Define cache base dir
 ANIM_TMP_DIR="${CACHE_DIR}/animation_tmp" # Define anim tmp dir
 ANIM_OUTPUT_DIR="${PROJECT_ROOT}/animations" # Define default anim output dir
+API_JOB_OUTPUT_DIR="${PROJECT_ROOT}/cache/api_job_outputs" # Default path
 
 # Python module path to run
 PYTHON_MODULE="radproc.cli.main"
@@ -65,6 +66,7 @@ mkdir -p "$SCRIPTS_DIR"
 mkdir -p "$CACHE_DIR"           # Ensure base cache dir exists
 mkdir -p "$ANIM_TMP_DIR"        # Create animation temp dir
 mkdir -p "$ANIM_OUTPUT_DIR"
+mkdir -p "$API_JOB_OUTPUT_DIR"
 
 # Create virtual environment if it doesn't exist
 if [ ! -d "$VENV_PATH" ]; then

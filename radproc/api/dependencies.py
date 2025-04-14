@@ -97,4 +97,37 @@ async def get_animation_output_dir() -> str:
     #     raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Cannot access animation output directory.")
     return anim_dir
 
-# Add more dependencies here as needed (e.g., get_processed_scan_dir)
+async def get_api_job_output_dir() -> str:
+    """Dependency to get and validate the configured API job output directory."""
+    job_output_dir = get_setting('app.api_job_output_dir') # Get from config
+    if not job_output_dir:
+        logger.error("API dependency error: 'app.api_job_output_dir' is not configured.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="API job output directory not configured on the server."
+        )
+
+    # Resolve to absolute path (assuming relative paths are relative to project root or CWD)
+    # This might need adjustment based on how your paths are typically handled
+    abs_job_output_dir = os.path.abspath(job_output_dir)
+
+    # Ensure the directory exists and is writable (best effort check)
+    try:
+        os.makedirs(abs_job_output_dir, exist_ok=True)
+        # Basic write test (create and delete a temp file)
+        test_file = os.path.join(abs_job_output_dir, ".write_test")
+        with open(test_file, "w") as f:
+            f.write("test")
+        os.remove(test_file)
+    except OSError as e:
+        logger.error(f"API job output directory '{abs_job_output_dir}' is not accessible or writable: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"API job output directory is not accessible/writable.",
+        )
+    except Exception as e:
+         logger.error(f"Unexpected error checking API job output directory '{abs_job_output_dir}': {e}")
+         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error accessing API job output directory.")
+
+    logger.debug(f"Using API job output directory: {abs_job_output_dir}")
+    return abs_job_output_dir
