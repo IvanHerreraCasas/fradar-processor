@@ -1,3 +1,5 @@
+# config/plot_styles.yaml
+
 defaults:
   # Default map tile source (if none specified per variable)
   # Example using OSM URL, adjust if you prefer another default
@@ -39,4 +41,98 @@ styles:
     map_tile:
       type: OSM # Instructs loader to create cartopy.io.img_tiles.OSM
       params:
-        desired_tile_form: 'L' # The specific parameter from your code
+        desired_tile_form: 'L' 
+  # Configuration specific to 'Zh' variable (Reflectivity)
+  DBZH:
+    cmap:
+      type: ListedColormap
+      colors: # Estimated RGBA values from image
+        - [0.00, 0.00, 0.00, 0.0] # Transparent (index 0, for values < 0.1)
+        - [0.00, 0.00, 1.00, 1.0] # Blue (10-15 dBZ)
+        - [0.53, 0.81, 0.98, 1.0] # Light Blue (15-20 dBZ)
+        - [0.00, 1.00, 1.00, 1.0] # Cyan (20-25 dBZ)
+        - [0.50, 1.00, 0.50, 1.0] # Light Green (25-30 dBZ)
+        - [0.00, 1.00, 0.00, 1.0] # Green (30-35 dBZ)
+        - [1.00, 1.00, 0.00, 1.0] # Yellow (35-40 dBZ)
+        - [1.00, 0.80, 0.00, 1.0] # Light Orange (40-45 dBZ)
+        - [1.00, 0.65, 0.00, 1.0] # Orange (45-50 dBZ)
+        - [1.00, 0.00, 0.00, 1.0] # Red (50-55 dBZ)
+        - [0.50, 0.00, 0.50, 1.0] # Purple (55-60 dBZ)
+        - [1.00, 0.00, 1.00, 1.0] # Magenta (60-65 dBZ)
+    norm:
+      type: BoundaryNorm
+      bounds: [0, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65] # Reflectivity bounds in dBZ
+    map_tile:
+      type: OSM # Instructs loader to create cartopy.io.img_tiles.OSM
+      params:
+        desired_tile_form: 'L' 
+  # Configuration specific to 'VRADH' variable (Radial Velocity)
+  VRADH:
+    cmap:
+      type: ListedColormap
+      colors: # Estimated RGBA values from image
+        - [0.00, 0.00, 0.50, 1.0] # Dark Blue (-40 to -30 m/s)
+        - [0.00, 0.00, 1.00, 1.0] # Blue (-30 to -20 m/s)
+        - [0.00, 0.50, 1.00, 1.0] # Lighter Blue (-20 to -10 m/s)
+        - [0.00, 1.00, 1.00, 1.0] # Cyan (-10 to -5 m/s)
+        - [0.00, 1.00, 0.00, 1.0] # Green (-5 to -1 m/s)
+        - [0.50, 1.00, 0.50, 1.0] # Light Green (-1 to -0.5 m/s)
+        - [1.00, 1.00, 1.00, 1.0] # White (-0.5 to 0.5 m/s)
+        - [1.00, 1.00, 0.50, 1.0] # Light Yellow (0.5 to 1 m/s)
+        - [1.00, 1.00, 0.00, 1.0] # Yellow (1 to 5 m/s)
+        - [1.00, 0.65, 0.00, 1.0] # Orange (5 to 10 m/s)
+        - [1.00, 0.00, 0.00, 1.0] # Red (10 to 20 m/s)
+        - [1.00, 0.00, 1.00, 1.0] # Magenta (20 to 30 m/s)
+        - [0.50, 0.00, 0.50, 1.0] # Purple (30 to 40 m/s)
+    norm:
+      type: BoundaryNorm
+      bounds: [-40, -30, -20, -10, -5, -1, -0.5, 0.5, 1, 5, 10, 20, 30, 40] # Velocity bounds in m/s
+    map_tile:
+      type: OSM # Instructs loader to create cartopy.io.img_tiles.OSM
+      params:
+        desired_tile_form: 'L' 
+  # Configuration specific to 'ZDR' variable (Differential Reflectivity)
+  ZDR:
+    cmap:
+      type: ListedColormap
+      colors: # Estimated RGBA values from image
+        - [0.00, 0.00, 0.50, 1.0] # Dark Blue (-3 to -2 dB)
+        - [0.00, 0.00, 1.00, 1.0] # Blue (-2 to -1.5 dB)
+        - [0.00, 1.00, 1.00, 1.0] # Cyan (-1.5 to -1 dB)
+        - [0.00, 1.00, 0.00, 1.0] # Green (-1 to -0.5 dB)
+        - [1.00, 1.00, 1.00, 1.0] # White (-0.5 to 0.5 dB)
+        - [1.00, 1.00, 0.00, 1.0] # Yellow (0.5 to 1 dB)
+        - [1.00, 0.65, 0.00, 1.0] # Orange (1 to 1.5 dB)
+        - [1.00, 0.00, 0.00, 1.0] # Red (1.5 to 2 dB)
+        - [0.50, 0.00, 0.50, 1.0] # Purple (2 to 3 dB)
+    norm:
+      type: BoundaryNorm
+      bounds: [-3, -2, -1.5, -1, -0.5, 0.5, 1, 1.5, 2, 3] # Zdr bounds in dB
+    map_tile:
+      type: OSM # Instructs loader to create cartopy.io.img_tiles.OSM
+      params:
+        desired_tile_form: 'L' 
+  # Configuration specific to 'Kdp' variable (Specific Differential Phase)
+  KDP:
+    cmap:
+      type: ListedColormap
+      colors: # Estimated RGBA values from image
+        - [0.00, 0.00, 0.00, 0.0] # Transparent (index 0, for values < 0.1)
+        - [0.00, 0.00, 0.50, 1.0] # Dark Blue (0.1-0.5 deg/km)
+        - [0.00, 0.00, 1.00, 1.0] # Blue (0.5-1.0 deg/km)
+        - [0.53, 0.81, 0.98, 1.0] # Light Blue (1.0-1.5 deg/km)
+        - [0.00, 1.00, 1.00, 1.0] # Cyan (1.5-2.0 deg/km)
+        - [0.50, 1.00, 0.50, 1.0] # Light Green (2.0-2.5 deg/km)
+        - [0.00, 1.00, 0.00, 1.0] # Green (2.5-3.0 deg/km)
+        - [1.00, 1.00, 0.00, 1.0] # Yellow (3.0-3.5 deg/km)
+        - [1.00, 0.80, 0.00, 1.0] # Light Orange (3.5-4.0 deg/km)
+        - [1.00, 0.65, 0.00, 1.0] # Orange (4.0-4.5 deg/km)
+        - [1.00, 0.00, 0.00, 1.0] # Red (4.5-5.0 deg/km)
+        - [0.50, 0.00, 0.50, 1.0] # Purple (5.0-5.5 deg/km)
+    norm:
+      type: BoundaryNorm
+      bounds: [0, 0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5] # Kdp bounds in deg/km
+    map_tile:
+      type: OSM # Instructs loader to create cartopy.io.img_tiles.OSM
+      params:
+        desired_tile_form: 'L' 

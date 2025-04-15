@@ -1,20 +1,25 @@
 input_dir: 
 output_dir: 
 images_dir: 
-timeseries_dir: C:/RadarData/TimeSeries # <<< REQUIRED if timeseries features are enabled/used. Path to save generated timeseries CSV 
+realtime_image_dir: 
+timeseries_dir:
 log_file: 
+api_log_file: 
+huey_log_file: 
+
 log_level_file: "DEBUG"          # Level for the log file (e.g., DEBUG, INFO, WARNING)
 log_level_console: "INFO"       # Level for console output (e.g., INFO, WARNING, ERROR)
 log_max_bytes: 5242880           # Max bytes per log file (e.g., 5 * 1024 * 1024 = 5MB)
 log_backup_count: 5              # Number of backup log files to keep
 watermark_path: 
-tile_cache_dir: 
+tile_cache_dir: ../cache/
 variables_to_process:
   RATE: "Tasa de precipitaci\xF3n (mm/h)"
 
 
 # --- File Monitor Settings ---
 input_file_pattern: "*.scnx.gz"
+monitor_interval_seconds: 60
 
 # --- Behaviour Settings ---
 move_file_after_processing: true # Used in standard mode if FTP is off or mode='disabled
@@ -25,3 +30,6 @@ animation_fps: 5                          # Default frames per second for animat
 animation_default_format: ".gif"          # Default output format (e.g., .gif, .mp4) - Extension matters!
 animation_tmp_dir: "cache/animation_tmp"  # Default temporary storage for regenerated frames during animation creation
 animation_output_dir: "animations"        # Default relative path for saving animations
+
+# --- API tmp output dir ---
+api_job_output_dir: cache/api_job_outputs/ # Relative to project root usually
