@@ -1,4 +1,12 @@
 # radproc/huey_app.py
+import matplotlib
+
+
+try:
+    matplotlib.use("Agg")
+    print("Matplotlib backend set to 'Agg'.")
+except Exception as e:
+    print(f"Warning: Could not set Matplotlib backend to 'Agg': {e}")
 from logging.handlers import RotatingFileHandler
 import os
 import logging
@@ -93,6 +101,7 @@ def _setup_logger(
 
 
         logging.getLogger('PIL').setLevel(logging.WARNING)
+        logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
         # --- Initial Log Message ---
         # Use the root logger directly after setup
