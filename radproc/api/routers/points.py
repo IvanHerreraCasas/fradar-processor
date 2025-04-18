@@ -16,7 +16,7 @@ router = APIRouter(
 )
 
 @router.get(
-    "/",
+    "",
     summary="List defined points of interest",
     response_model=List[Point] 
 )

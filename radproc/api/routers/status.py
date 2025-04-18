@@ -16,7 +16,7 @@ router = APIRouter(
 )
 
 @router.get(
-    "/",
+    "",
     summary="Get basic API and configuration status",
     response_model=StatusResponse # <<< Apply the response model here
 )
