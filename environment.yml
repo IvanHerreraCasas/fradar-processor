@@ -72,4 +72,5 @@ dependencies:
   - xmltodict=0.14.2
   - xradar=0.9.0
   - tqdm
+  - psycopg2
 prefix: /home/ivan/miniconda3/envs/frad-proc
