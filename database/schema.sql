@@ -14,7 +14,6 @@ CREATE TABLE IF NOT EXISTS radproc_points (
     latitude DOUBLE PRECISION NOT NULL,
     longitude DOUBLE PRECISION NOT NULL,
     target_elevation DOUBLE PRECISION NOT NULL,
-    default_variable_name VARCHAR(50) NOT NULL, -- Will be linked to radproc_variables
     description TEXT,
     cached_azimuth_index INTEGER,
     cached_range_index INTEGER
@@ -22,7 +21,6 @@ CREATE TABLE IF NOT EXISTS radproc_points (
 
 COMMENT ON TABLE radproc_points IS 'Stores definitions of points of interest for time series extraction.';
 COMMENT ON COLUMN radproc_points.point_name IS 'Unique user-defined name for the point (e.g., from points.yaml).';
-COMMENT ON COLUMN radproc_points.default_variable_name IS 'Default radar variable typically processed for this point.';
 
 -- Table for storing variable definitions
 CREATE TABLE IF NOT EXISTS radproc_variables (

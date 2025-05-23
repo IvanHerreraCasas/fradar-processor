@@ -15,6 +15,7 @@ watermark_path:
 tile_cache_dir: ../cache/
 variables_to_process:
   RATE: "Tasa de precipitaci\xF3n (mm/h)"
+timeseries_default_variables: ["RATE", "DBZH"]
 
 
 # --- File Monitor Settings ---
