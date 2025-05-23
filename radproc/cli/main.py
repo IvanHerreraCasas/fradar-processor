@@ -6,7 +6,7 @@ try:
     print("Matplotlib backend set to 'Agg'.")
 except Exception as e:
     print(f"Warning: Could not set Matplotlib backend to 'Agg': {e}")
-    
+
 import argparse
 import os
 import sys
@@ -39,6 +39,9 @@ from ..core.processor import generate_historical_plots
 from ..core.analysis import generate_point_timeseries, calculate_accumulation
 from ..core.visualization.animator import create_animation
 from ..core.utils.upload_queue import start_worker, stop_worker
+from ..core.data import get_scan_elevation
+from ..core.utils.helpers import parse_datetime_from_filename, move_processed_file
+
 # --- End Core Imports ---
 
 # --- Logging Setup ---
@@ -123,6 +126,9 @@ def _setup_logger(
 
 # --- CLI Command Functions ---
 
+import shutil
+from tqdm import tqdm
+TQDM_AVAILABLE = True
 def cli_run(args: argparse.Namespace):
     logger = logging.getLogger(__name__)
     logger.info("=== Starting Monitor Mode ===")
@@ -377,6 +383,161 @@ def cli_accumulate(args: argparse.Namespace):
 
 
 # --- Main Execution ---
+
+def cli_reorg_scans(args: argparse.Namespace):
+    """
+    Handler for the 'reorg-scans' command.
+    Reorganizes processed scan files from YYYYMMDD/ structure to
+    ElevationCode/YYYYMMDD/ structure.
+    """
+    logger = logging.getLogger(__name__)
+    logger.info("=== Starting Scan File Reorganization ===")
+
+    output_dir = args.output_dir if args.output_dir else get_setting('app.output_dir')
+    if not output_dir:
+        logger.error("Output directory not specified and not found in config ('app.output_dir'). Cannot proceed.")
+        sys.exit(1)
+    if not os.path.isdir(output_dir):
+        logger.error(f"Specified output directory does not exist: {output_dir}")
+        sys.exit(1)
+
+    logger.info(f"Scanning directory: {output_dir}")
+    if args.dry_run:
+        logger.info("DRY RUN active: No files will be moved or directories deleted.")
+    if args.delete_empty:
+        logger.info("DELETE EMPTY active: Empty YYYYMMDD source directories will be deleted after successful moves.")
+
+    moved_count = 0
+    skipped_count = 0
+    error_count = 0
+    deleted_dir_count = 0
+
+    old_date_dirs_to_process = []
+    for item_name in os.listdir(output_dir):
+        item_path = os.path.join(output_dir, item_name)
+        if os.path.isdir(item_path) and item_name.isdigit() and len(item_name) == 8:
+            old_date_dirs_to_process.append(item_path)
+
+    if not old_date_dirs_to_process:
+        logger.info("No old-structure YYYYMMDD directories found to process.")
+        logger.info("--- Reorganization Summary ---")
+        logger.info("No files processed.")
+        return
+
+    # Determine the iterator for the outer loop (directories)
+    dir_iterator_func = tqdm if TQDM_AVAILABLE else tqdm_fallback_iterator
+    dir_iterator = dir_iterator_func(old_date_dirs_to_process, desc="Date Dirs", unit="dir", leave=False)
+
+    for date_dir_path in dir_iterator:
+        if TQDM_AVAILABLE:  # Update description for tqdm
+            dir_iterator.set_description(f"Processing Dir: {os.path.basename(date_dir_path)}")
+        else:  # For fallback, log which directory is being processed
+            logger.info(f"Processing Date Directory: {os.path.basename(date_dir_path)}")
+
+        scnx_files_in_dir = [f for f in os.listdir(date_dir_path) if f.endswith(".scnx.gz")]
+
+        if not scnx_files_in_dir:
+            logger.info(f"No .scnx.gz files found in {date_dir_path}.")
+            if args.delete_empty:
+                try:
+                    if not os.listdir(date_dir_path):  # Check if truly empty
+                        log_msg = f"Would delete empty directory: {date_dir_path}" if args.dry_run else f"Deleting empty directory: {date_dir_path}"
+                        logger.info(log_msg)
+                        if not args.dry_run:
+                            os.rmdir(date_dir_path)
+                            deleted_dir_count += 1
+                    else:
+                        logger.info(f"Directory {date_dir_path} is not empty (contains other files). Will not delete.")
+                except OSError as e:
+                    logger.error(f"Failed to delete directory {date_dir_path}: {e}")
+            continue
+
+        files_successfully_processed_from_dir = 0  # For --delete-empty logic
+
+        file_iterator_func = tqdm if TQDM_AVAILABLE else tqdm_fallback_iterator
+        file_iterator = file_iterator_func(scnx_files_in_dir, desc=f"Files in {os.path.basename(date_dir_path)}",
+                                           unit="file", leave=False)
+
+        for filename in file_iterator:
+            source_filepath = os.path.join(date_dir_path, filename)
+
+            elevation = get_scan_elevation(source_filepath)
+            scan_datetime = parse_datetime_from_filename(filename)
+
+            if elevation is None:
+                logger.warning(f"Could not get elevation for {source_filepath}. Skipping.")
+                skipped_count += 1
+                continue
+            if scan_datetime is None:
+                logger.warning(f"Could not parse datetime from filename {filename}. Skipping.")
+                skipped_count += 1
+                continue
+
+            elevation_code = f"{int(round(elevation * 100)):03d}"
+            date_str = scan_datetime.strftime("%Y%m%d")
+            new_target_dir_check = os.path.join(output_dir, elevation_code, date_str)
+            new_target_filepath_check = os.path.join(new_target_dir_check, filename)
+
+            if os.path.exists(new_target_filepath_check):
+                logger.warning(
+                    f"Target file {new_target_filepath_check} already exists. Skipping move for {source_filepath}.")
+                skipped_count += 1
+                files_successfully_processed_from_dir += 1  # Count as "processed" for deletion
+                continue
+
+            log_msg_dry_run = f"DRY RUN: Would move '{source_filepath}' to new structure (Elev: {elevation:.2f}, DT: {scan_datetime.isoformat()})"
+            log_msg_action = f"Attempting to move '{source_filepath}'..."
+            logger.info(log_msg_dry_run if args.dry_run else log_msg_action)
+
+            if not args.dry_run:
+                try:
+                    moved_path = move_processed_file(source_filepath, output_dir, elevation, scan_datetime)
+                    if moved_path:
+                        logger.info(f"Successfully moved to: {moved_path}")
+                        moved_count += 1
+                        files_successfully_processed_from_dir += 1
+                    else:
+                        logger.error(f"Move failed for {source_filepath} (move_processed_file returned None).")
+                        error_count += 1
+                except Exception as e:
+                    logger.error(f"Error moving file {source_filepath}: {e}", exc_info=True)
+                    error_count += 1
+            else:  # Dry run, simulate counts
+                moved_count += 1
+                files_successfully_processed_from_dir += 1
+
+        # After processing all files in the date directory, check for deletion
+        if args.delete_empty and files_successfully_processed_from_dir == len(scnx_files_in_dir):
+            try:
+                # Check if directory is now truly empty or only contains non-.scnx.gz files
+                # For safety, we'll only delete if it's completely empty.
+                if not os.listdir(date_dir_path):
+                    log_msg = f"DRY RUN: Would delete successfully processed and now empty YYYYMMDD directory: {date_dir_path}" if args.dry_run else f"Deleting successfully processed and now empty YYYYMMDD directory: {date_dir_path}"
+                    logger.info(log_msg)
+                    if not args.dry_run:
+                        os.rmdir(date_dir_path)
+                        deleted_dir_count += 1
+                else:
+                    logger.info(f"Directory {date_dir_path} processed but still contains other files. Will not delete.")
+            except OSError as e:
+                logger.error(f"Failed to delete source directory {date_dir_path}: {e}")
+
+    logger.info("--- Reorganization Summary ---")
+    logger.info(f"Files processed for moving (actual moves or dry run actions): {moved_count}")
+    logger.info(f"Files skipped (target existed, or error getting elev/dt): {skipped_count}")
+    logger.info(f"Errors during move operations: {error_count}")
+    if args.delete_empty:
+        logger.info(f"Old YYYYMMDD directories deleted: {deleted_dir_count}")
+    logger.info("Scan file reorganization finished.")
+
+    logger.info("--- Reorganization Summary ---")
+    logger.info(f"Files processed for moving (includes dry run counts): {moved_count}")
+    logger.info(f"Files skipped (target existed, or error getting elev/dt): {skipped_count}")
+    logger.info(f"Errors during move operations: {error_count}")
+    if args.delete_empty:
+        logger.info(f"Old YYYYMMDD directories deleted: {deleted_dir_count}")
+    logger.info("Scan file reorganization finished.")
+
 def main():
     # 1. Load Core Configuration FIRST
     try:
@@ -559,6 +720,35 @@ def main():
         help="Frames per second for the animation (overrides 'animation_fps' in config)."
     )
     animate_parser.set_defaults(func=cli_animate)
+
+    # +++ 'reorg-scans' command +++
+    reorg_parser = subparsers.add_parser(
+        "reorg-scans",
+        help="Reorganize processed scan files from YYYYMMDD/ to ElevationCode/YYYYMMDD/ structure.",
+        description="Scans the configured output directory for radar scan files currently stored\n"
+                    "in an old format (e.g., output_dir/YYYYMMDD/scan.scnx.gz) and moves them\n"
+                    "to the new structured format (output_dir/ElevationCode/YYYYMMDD/scan.scnx.gz).\n"
+                    "This command reads each scan to determine its elevation."
+    )
+    reorg_parser.add_argument(
+        "--output-dir",
+        metavar="PATH",
+        help="Specify the base output directory to reorganize. Defaults to 'app.output_dir' from config."
+    )
+    reorg_parser.add_argument(
+        "--dry-run",
+        action='store_true',
+        help="Simulate the reorganization: show what would be moved and deleted without making changes."
+    )
+    reorg_parser.add_argument(
+        "--delete-empty",
+        action='store_true',
+        help="After successfully moving all .scnx.gz files from an old YYYYMMDD directory,\n"
+             "delete the source YYYYMMDD directory if it's empty or only contained those files."
+    )
+    reorg_parser.set_defaults(func=cli_reorg_scans)
+    # ++++++++++++++++++++++++++++++
+
     # +++++++++++++++++++++++++++++
 
     # 4. Parse Arguments
