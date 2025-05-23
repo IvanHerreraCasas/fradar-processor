@@ -1,0 +1,13 @@
+# PostgreSQL Database Configuration for RadProc
+#
+# Copy this file to 'database_config.yaml' and fill in your details.
+# The password should ideally be set via an environment variable for security.
+
+postgresql:
+  host: "localhost"  # Or the IP/hostname of your PostgreSQL server
+  port: 5432
+  dbname: "radproc_db" # The database name created by the setup script
+  user: "radproc_user"  # The user created by the setup script
+  # For the password, the application will attempt to read from an environment variable
+  # named RADPROC_DB_PASSWORD. Do NOT store the password directly in this file.
+  # password_env_var: "RADPROC_DB_PASSWORD" # Informational, app will look for this

@@ -45,7 +45,8 @@ def load_config(config_dir: str = CONFIG_DIR) -> None:
         'ftp': 'ftp_config.yaml',
         'radar': 'radar_params.yaml',
         'styles': 'plot_styles.yaml',
-        'points_config': 'points.yaml', # <<< NEW: Load points config
+        'points_config': 'points.yaml',
+        'database': 'database_config.yaml',
     }
     # Define which configs are essential for basic operation
     required_configs = ['app'] # Modify as needed
