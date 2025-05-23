@@ -246,7 +246,7 @@ app.add_middleware(
 )
 
 # --- Include Routers ---
-api_prefix = "/api/v1" # Optional prefix for versioning
+api_prefix = "" # Optional prefix for versioning
 
 app.include_router(status.router, prefix=api_prefix)
 app.include_router(points.router, prefix=api_prefix)
