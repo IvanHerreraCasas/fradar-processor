@@ -152,6 +152,35 @@ def get_or_create_variable_id(conn, variable_name: str, units: Optional[str] = N
         if cur: cur.close()
 
 
+def get_all_points_from_db(conn) -> List[Dict[str, Any]]:
+    """Fetches all point configurations from the radproc_points table, ordered by point_name."""
+    logger.debug("Fetching all point configurations from database.")
+    points_list = []
+    cur = None
+    try:
+        # Use DictCursor to get rows as dictionaries
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        # Select all relevant columns you'd expect in a "point_config" dict
+        cur.execute("""
+            SELECT point_id, point_name, latitude, longitude, target_elevation, 
+                   default_variable_name, description, 
+                   cached_azimuth_index, cached_range_index 
+            FROM radproc_points 
+            ORDER BY point_name;
+        """)
+        rows = cur.fetchall()
+        for row in rows:
+            points_list.append(dict(row)) # Convert DictRow to a standard dict
+        logger.info(f"Fetched {len(points_list)} points from database.")
+    except psycopg2.Error as e:
+        logger.error(f"Database error fetching all points: {e}", exc_info=True)
+        # Return empty list on error to prevent downstream crashes
+    except Exception as e:
+        logger.error(f"Unexpected error fetching all points: {e}", exc_info=True)
+    finally:
+        if cur: cur.close()
+    return points_list
+
 def get_point_db_id(conn, point_name: str) -> Optional[int]:
     """Fetches the point_id for a given point_name from radproc_points."""
     cur = None
