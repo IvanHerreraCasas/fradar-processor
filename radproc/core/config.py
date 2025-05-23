@@ -90,60 +90,59 @@ def get_setting(key_path: str, default: Any = None) -> Any:
 
 # --- Point Configuration Functions (Now Database-Driven) ---
 
-def get_point_config(point_name: str) -> Optional[Dict[str, Any]]:
-    """
-    Finds the configuration dictionary for a specific point by its name
-    by querying the database.
-    """
-    # Import locally to avoid circular dependency at module load time,
-    # as db_manager imports get_setting from this module.
-    from .db_manager import get_connection, release_connection, get_point_config_from_db
+    def get_point_config(point_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Finds the configuration dictionary for a specific point by its name
+        by querying the database.
+        """
+        # Import locally to avoid circular dependency at module load time
+        from .db_manager import get_connection, release_connection, get_point_config_from_db
 
-    logger.debug(f"Fetching DB config for point: '{point_name}'")
-    conn = None
-    try:
-        conn = get_connection() # From db_manager
-        # get_point_config_from_db in db_manager handles the actual query
-        point_details = get_point_config_from_db(conn, point_name)
-        return point_details
-    except ConnectionError as ce: # Catch connection errors specifically if pool fails
-        logger.error(f"DB Connection Error fetching point config for '{point_name}': {ce}", exc_info=True)
-        return None
-    except Exception as e:
-        logger.error(f"Error fetching point config for '{point_name}' from DB: {e}", exc_info=True)
-        return None
-    finally:
-        if conn:
-            release_connection(conn) # From db_manager
+        logger.debug(f"Fetching DB config for point: '{point_name}'")
+        conn = None
+        try:
+            conn = get_connection()
+            point_details = get_point_config_from_db(conn, point_name)
+            return point_details
+        except ConnectionError as ce:
+            logger.error(f"DB Connection Error fetching point config for '{point_name}': {ce}",
+                         exc_info=False)  # Less noisy for expected errors
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching point config for '{point_name}' from DB: {e}", exc_info=True)
+            return None
+        finally:
+            if conn:
+                release_connection(conn)
 
-def get_all_points_config() -> List[Dict[str, Any]]:
-    """
-    Fetches all point configurations from the radproc_points table in the database.
-    Returns an empty list if an error occurs.
-    """
-    # Import locally
-    from .db_manager import get_connection, release_connection, get_all_points_from_db
+    def get_all_points_config() -> List[Dict[str, Any]]:
+        """
+        Fetches all point configurations from the radproc_points table in the database.
+        Returns an empty list if an error occurs.
+        """
+        # Import locally
+        from .db_manager import get_connection, release_connection, get_all_points_from_db
 
-    logger.debug("Fetching all point configurations from database.")
-    conn = None
-    try:
-        conn = get_connection() # From db_manager
-        points_list = get_all_points_from_db(conn) # From db_manager
-        return points_list
-    except ConnectionError as ce:
-        logger.error(f"DB Connection Error fetching all point configs: {ce}", exc_info=True)
-        return []
-    except Exception as e:
-        logger.error(f"Error fetching all point configs from DB: {e}", exc_info=True)
-        return [] # Return empty list on error
-    finally:
-        if conn:
-            release_connection(conn)
+        logger.debug("Fetching all point configurations from database.")
+        conn = None
+        try:
+            conn = get_connection()
+            points_list = get_all_points_from_db(conn)
+            return points_list
+        except ConnectionError as ce:
+            logger.error(f"DB Connection Error fetching all point configs: {ce}", exc_info=False)
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error fetching all point configs from DB: {e}", exc_info=True)
+            return []
+        finally:
+            if conn:
+                release_connection(conn)
 
-# The old get_point_config (reading from YAML via get_setting) is now replaced.
-# `load_config` still loads 'points.yaml' into `_config['points_config']`
-# This allows the migration script (Phase 4) to access the YAML data via
-# `get_setting('points_config.points')` for the initial import. Optional[Dict[str, Any]]:
+    # The old get_point_config (reading from YAML via get_setting) is now replaced.
+    # `load_config` still loads 'points.yaml' into `_config['points_config']`
+    # This allows the migration script (Phase 4) to access the YAML data via
+    # `get_setting('points_config.points')` for the initial import. Optional[Dict[str, Any]]:
     """
     Finds the configuration dictionary for a specific point by its name.
 

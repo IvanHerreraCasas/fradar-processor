@@ -158,24 +158,21 @@ def get_all_points_from_db(conn) -> List[Dict[str, Any]]:
     points_list = []
     cur = None
     try:
-        # Use DictCursor to get rows as dictionaries
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        # Select all relevant columns you'd expect in a "point_config" dict
+        # Select columns according to the new radproc_points schema
         cur.execute("""
             SELECT point_id, point_name, latitude, longitude, target_elevation, 
-                   default_variable_name, description, 
-                   cached_azimuth_index, cached_range_index 
+                   description, cached_azimuth_index, cached_range_index 
             FROM radproc_points 
             ORDER BY point_name;
         """)
         rows = cur.fetchall()
         for row in rows:
-            points_list.append(dict(row)) # Convert DictRow to a standard dict
+            points_list.append(dict(row))
         logger.info(f"Fetched {len(points_list)} points from database.")
     except psycopg2.Error as e:
         logger.error(f"Database error fetching all points: {e}", exc_info=True)
-        # Return empty list on error to prevent downstream crashes
-    except Exception as e:
+    except Exception as e: # Catch any other unexpected errors
         logger.error(f"Unexpected error fetching all points: {e}", exc_info=True)
     finally:
         if cur: cur.close()
@@ -203,24 +200,33 @@ def get_point_db_id(conn, point_name: str) -> Optional[int]:
 # --- Placeholder for other functions from the plan ---
 
 def get_point_config_from_db(conn, point_name_or_id: Union[str, int]) -> Optional[Dict[str, Any]]:
-    # TODO: Implement fetching full point details
     logger.debug(f"Fetching point config for: {point_name_or_id}")
     cur = None
     try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)  # Use DictCursor
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        # Select columns according to the new radproc_points schema
+        sql = """SELECT point_id, \
+                        point_name, \
+                        latitude, \
+                        longitude, \
+                        target_elevation,
+                        description, \
+                        cached_azimuth_index, \
+                        cached_range_index
+                 FROM radproc_points """
         if isinstance(point_name_or_id, str):
-            cur.execute("SELECT * FROM radproc_points WHERE point_name = %s;", (point_name_or_id,))
+            cur.execute(sql + "WHERE point_name = %s;", (point_name_or_id,))
         elif isinstance(point_name_or_id, int):
-            cur.execute("SELECT * FROM radproc_points WHERE point_id = %s;", (point_name_or_id,))
+            cur.execute(sql + "WHERE point_id = %s;", (point_name_or_id,))
         else:
-            logger.error("Invalid type for point_name_or_id.")
+            logger.error("Invalid type for point_name_or_id in get_point_config_from_db.")
             return None
 
         row = cur.fetchone()
         if row:
             return dict(row)
         else:
-            logger.warning(f"Point '{point_name_or_id}' not found in database.")
+            logger.warning(f"Point '{point_name_or_id}' not found in radproc_points table.")
             return None
     except psycopg2.Error as e:
         logger.error(f"Database error fetching point config for '{point_name_or_id}': {e}", exc_info=True)
@@ -358,6 +364,44 @@ def batch_insert_timeseries_data(conn, data_list: List[Dict[str, Any]]) -> bool:
     finally:
         if cur: cur.close()
 
-# Placeholder for other functions from the plan like query_timeseries_for_export,
-# add_point_to_db, add_variable_to_db, and index cache management.
-# We'll fill these as we progress through the refactoring of analysis.py and other modules.
+def update_point_cached_indices_in_db(conn, point_id: int, az_idx: Optional[int], rg_idx: Optional[int]) -> bool:
+    """
+    Updates the cached_azimuth_index and cached_range_index for a given point_id
+    in the radproc_points table.
+    """
+    if point_id is None:
+        logger.error("Cannot update cached indices: point_id is None.")
+        return False
+
+    logger.debug(f"Attempting to update cached indices for point_id {point_id} to az={az_idx}, rg={rg_idx}")
+    cur = None
+    try:
+        cur = conn.cursor()
+        query = """
+            UPDATE radproc_points
+            SET cached_azimuth_index = %s, cached_range_index = %s
+            WHERE point_id = %s;
+        """
+        cur.execute(query, (az_idx, rg_idx, point_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            logger.warning(f"No point found with point_id {point_id} during cached indices update. Indices not saved to DB.")
+            return False # Or perhaps true if we consider it "handled" for a non-existent point
+        logger.info(f"Successfully updated cached indices for point_id {point_id} in database.")
+        return True
+    except psycopg2.Error as e:
+        logger.error(f"Database error updating cached indices for point_id {point_id}: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error updating cached indices for point_id {point_id}: {e}", exc_info=True)
+        if conn and not conn.closed: # Check if conn is not closed before rollback
+             try:
+                 conn.rollback()
+             except psycopg2.Error as rb_err:
+                 logger.error(f"Rollback failed: {rb_err}")
+        return False
+    finally:
+        if cur:
+            cur.close()
