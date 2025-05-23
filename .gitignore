@@ -4,6 +4,7 @@
 venv/
 env/
 ENV/
+fradar_processor.egg-info/
 
 # --- Python Cache & Compiled Files ---
 __pycache__/
