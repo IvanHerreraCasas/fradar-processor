@@ -3,22 +3,20 @@
 import os
 import logging
 import numpy as np
-from datetime import datetime
+import pandas as pd  # Added for pd.to_datetime
+from datetime import datetime, timezone  # Ensured timezone is imported
 from typing import Dict, Any, Optional
 import shutil
 
 # --- Core Imports ---
-# Use get_config in addition to get_setting
-from core.config import get_setting, get_config
-from core.data import read_scan, get_filepaths_in_range # Keep get_filepaths_in_range for historical
-from core.utils.geo import georeference_dataset
-from core.utils.helpers import move_processed_file
-from core.visualization.style import get_plot_style
-from core.visualization.plotter import create_ppi_image
-from core.utils.upload_queue import add_scan_to_queue, add_image_to_queue
-# +++ Import the new timeseries update function +++
-from core.analysis import update_timeseries_for_scan
-# +++++++++++++++++++++++++++++++++++++++++++++++++
+from .config import get_setting, get_config  # Corrected import
+from .data import read_scan, get_filepaths_in_range
+from .utils.geo import georeference_dataset
+from .utils.helpers import move_processed_file  # This is the function we modified
+from .visualization.style import get_plot_style
+from .visualization.plotter import create_ppi_image
+from .utils.upload_queue import add_scan_to_queue, add_image_to_queue
+from .analysis import update_timeseries_for_scan
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -34,9 +32,8 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
         config: The application configuration dictionary (optional, uses get_config() if None).
 
     Returns:
-        True if essential steps succeeded (read, plot saving if needed, queuing if needed), False otherwise.
+        True if essential steps succeeded, False otherwise.
     """
-    # --- Configuration Loading and Initial Setup ---
     if config is None: config = get_config()
     logger.info(f"Starting processing for scan: {filepath}")
 
@@ -54,34 +51,26 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
     enable_timeseries = get_setting('app.enable_timeseries_updates', False)
     realtime_dir = get_setting('app.realtime_image_dir')
 
-    # --- Determine if Plotting is Needed ---
-    # Plotting is required if images need saving locally OR if images need uploading
-    plotting_required = (variables_to_process and images_dir) or (image_upload_mode != 'disabled' and variables_to_process)
-    # If plotting is required but images_dir is missing, it's an error
+    plotting_required = (variables_to_process and images_dir) or \
+                        (image_upload_mode != 'disabled' and variables_to_process)
     if plotting_required and not images_dir:
-        logger.error("Configuration missing 'app.images_dir', which is required for plot generation/upload.")
+        logger.error("Config missing 'app.images_dir', required for plot generation/upload.")
         return False
 
-    # --- Basic Validations ---
     if not os.path.exists(filepath):
-         logger.error(f"Input file does not exist: {filepath}")
-         return False
-    if not variables_to_process and plotting_required:
-        logger.error("Plotting required by config, but no 'variables_to_process' defined.")
+        logger.error(f"Input file does not exist: {filepath}")
         return False
-    # If any upload mode is enabled, servers must be configured
+    if not variables_to_process and plotting_required:
+        logger.error("Plotting required, but no 'variables_to_process' defined.")
+        return False
     if (scan_upload_mode != 'disabled' or image_upload_mode != 'disabled') and not ftp_servers:
-        logger.warning(f"FTP mode enabled for scans ('{scan_upload_mode}') or images ('{image_upload_mode}') but no servers configured. Disabling FTP.")
+        logger.warning("FTP mode enabled but no servers configured. Disabling FTP.")
         scan_upload_mode = 'disabled'
         image_upload_mode = 'disabled'
-    # Validate output_dir if moving scan in standard mode
     if scan_upload_mode == 'standard' and move_local_in_standard and not output_dir:
-        logger.warning("Scan mode is 'standard' with local move enabled, but 'app.output_dir' is not set. Disabling local move.")
+        logger.warning("'output_dir' not set for standard scan mode with local move. Disabling move.")
         move_local_in_standard = False
 
-
-    # --- Mode 1: Scan Upload Only ('ftp_only' for scans, 'disabled' for images) ---
-    # This mode still requires plotting if image_upload_mode is NOT disabled
     if scan_upload_mode == 'ftp_only' and image_upload_mode == 'disabled':
         logger.info(f"Mode 'ftp_only' (scan), 'disabled' (image): Queuing scan file {filepath}")
         queued_at_least_one_scan = False
@@ -90,224 +79,218 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
             if add_scan_to_queue(filepath, server_config):
                 queued_at_least_one_scan = True
             else:
-                scan_queueing_succeeded = False # Critical add failure
-
+                scan_queueing_succeeded = False
         if not queued_at_least_one_scan and ftp_servers:
-            logger.error(f"Mode 'ftp_only' (scan): Failed to queue scan file for any FTP server: {filepath}")
+            logger.error(f"Mode 'ftp_only' (scan): Failed to queue for any FTP server: {filepath}")
             return False
-        # Skip local move, skip plotting. Success depends on queuing the scan.
-        logger.info(f"Mode 'ftp_only' (scan): Successfully queued scan file.")
+        logger.info("Mode 'ftp_only' (scan): Successfully queued scan file.")
         return scan_queueing_succeeded
 
-
-    # --- Main Processing Logic (Reading, Plotting, Moving, Queuing) ---
     ds = None
-    ds_geo = None # Keep track of the georeferenced dataset
-    local_plots_succeeded = False # Assume false unless plots generated and saved
-    overall_success = True      # Assume true, set to false on critical failures
-    saved_image_paths: Dict[str, str] = {} # Store paths of saved images {variable: path}
+    ds_geo = None
+    local_plots_succeeded = False
+    overall_success = True
+    saved_image_paths: Dict[str, str] = {}
+    scan_elevation_val: Optional[float] = None
+    scan_datetime_val: Optional[datetime] = None
 
     try:
-        # --- Reading and Georeferencing (Required for plotting, timeseries, or standard mode) ---
-        # Determine if we absolutely need to read the data
         needs_data_read = plotting_required or enable_timeseries or scan_upload_mode != 'ftp_only'
         if needs_data_read:
-            logger.debug(f"Reading scan data for variables: {list(variables_to_process.keys())}")
-            # Determine variables needed (for plotting and potentially timeseries defaults)
-            vars_needed = set(variables_to_process.keys()) if variables_to_process else set()
-            if enable_timeseries:
-                 # Add default variables from points config if needed for index finding/extraction
-                 all_points = get_setting('points_config.points', [])
-                 for p in all_points:
-                     if isinstance(p, dict) and p.get('variable'):
-                         vars_needed.add(p['variable'])
-
-            if not vars_needed:
-                # If plotting/timeseries enabled but no variables identified, log warning
-                 if plotting_required or enable_timeseries:
-                     logger.warning("No variables identified for plotting or timeseries extraction.")
-                 # Can still proceed if only moving/uploading scan file in standard mode
             vars_to_read = list(variables_to_process.keys()) if variables_to_process else None
-            if not vars_to_read and plotting_required: # Should have been caught earlier, but double-check
-                 logger.error("Cannot proceed: Plotting required but no variables configured.")
-                 return False
+            if not vars_to_read and plotting_required:
+                logger.error("Cannot proceed: Plotting required but no variables configured.")
+                return False
 
             ds = read_scan(filepath, variables=vars_to_read)
             if ds is None:
                 logger.error(f"Failed to read scan file: {filepath}")
-                return False # Critical failure
+                return False
 
             logger.debug("Georeferencing dataset...")
             ds_geo = georeference_dataset(ds)
-            # Basic check for successful georeferencing
             if 'x' not in ds_geo.coords or 'y' not in ds_geo.coords:
-                 logger.warning("Georeferencing may have failed (missing x/y coords). Plotting/Timeseries might fail.")
+                logger.warning("Georeferencing may have failed (missing x/y coords).")
 
-            # +++ Automatic Timeseries Update +++
-            # Perform this *after* georeferencing but *before* potential file move
-            if enable_timeseries and ds_geo is not None:
+            # Extract elevation and datetime for moving and other uses
+            if ds_geo is not None and 'elevation' in ds_geo.coords and 'time' in ds_geo.coords:
+                try:
+                    scan_elevation_val = float(ds_geo['elevation'].item())
+                    dt_val_from_ds = pd.to_datetime(ds_geo['time'].item())
+                    if dt_val_from_ds.tzinfo is None:
+                        scan_datetime_val = dt_val_from_ds.tz_localize(timezone.utc)
+                    else:
+                        scan_datetime_val = dt_val_from_ds.tz_convert(timezone.utc)
+                    logger.debug(f"Extracted from ds_geo: elev={scan_elevation_val}, dt={scan_datetime_val}")
+                except Exception as e:
+                    logger.error(f"Failed to extract elevation/datetime from ds_geo: {e}")
+                    overall_success = False  # Critical for moving file correctly
+
+            if enable_timeseries and ds_geo is not None and overall_success:
                 logger.info("Triggering automatic timeseries update...")
                 try:
                     update_timeseries_for_scan(ds_geo)
                 except Exception as ts_update_err:
-                    # Log error but DO NOT let it stop the main processing workflow
                     logger.error(f"Error during automatic timeseries update: {ts_update_err}", exc_info=True)
                 logger.info("Automatic timeseries update attempt finished.")
-            elif enable_timeseries:
-                 logger.warning("Skipping timeseries update because georeferenced dataset is invalid.")
-            # ++++++++++++++++++++++++++++++++++++
+            elif enable_timeseries and not ds_geo:
+                logger.warning("Skipping timeseries update: georeferenced dataset is invalid.")
 
-            
+            if plotting_required and variables_to_process and images_dir and ds_geo is not None and overall_success:
+                logger.debug(f"Generating plots for {list(variables_to_process.keys())}...")
+                # Reuse scan_datetime_val and scan_elevation_val if available
+                # For plotting, dt_utc and elevation for title/filename comes from ds_geo directly
+                try:
+                    dt_np_plot = np.datetime64(ds_geo['time'].values.item())  # For plot title/filename
+                    dt_plot = dt_np_plot.astype(datetime)
+                    elevation_plot = float(ds_geo['elevation'].values.item())  # For plot title/filename
+                    date_str_plot = dt_plot.strftime("%Y%m%d")
+                    datetime_file_str_plot = dt_plot.strftime("%Y%m%d_%H%M")
+                    elevation_code_plot = f"{int(round(elevation_plot * 100)):03d}"
+                except Exception as meta_err:
+                    logger.error(f"Failed to extract metadata for plotting: {meta_err}", exc_info=True)
+                    return False  # Critical for plotting
 
-            # Generate and Save Plots Locally (if required)
-            saved_image_paths: Dict[str, str] = {} # Store paths of saved images {variable: path}
-            if plotting_required and variables_to_process and images_dir and ds_geo is not None:
-                 logger.debug(f"Generating plots for {list(variables_to_process.keys())}...")# Extract Metadata
-                 try:
-                     dt_np = np.datetime64(ds_geo['time'].values.item())
-                     dt = dt_np.astype(datetime)
-                     elevation = float(ds_geo['elevation'].values.item())
-                     date_str = dt.strftime("%Y%m%d")
-                     datetime_file_str = dt.strftime("%Y%m%d_%H%M")
-                     elevation_code = f"{int(elevation * 100):03d}"
-                 except Exception as meta_err:
-                     logger.error(f"Failed to extract metadata: {meta_err}", exc_info=True)
-                     return False
-                 
-                 num_plots_succeeded = 0
-                 for variable in variables_to_process.keys():
-                     if variable not in ds_geo.data_vars: continue
-                     plot_style = get_plot_style(variable)
-                     if plot_style is None: continue
+                num_plots_succeeded = 0
+                for variable in variables_to_process.keys():
+                    if variable not in ds_geo.data_vars: continue
+                    plot_style = get_plot_style(variable)
+                    if plot_style is None: continue
 
-                     image_bytes = create_ppi_image(ds_geo, variable, plot_style, watermark_path, watermark_zoom)
-                     if image_bytes:
-                         image_sub_dir = os.path.join(images_dir, variable, date_str, elevation_code)
-                         os.makedirs(image_sub_dir, exist_ok=True)
-                         image_filename = f"{variable}_{elevation_code}_{datetime_file_str}.png"
-                         image_filepath = os.path.join(image_sub_dir, image_filename)
-                         try:
-                             with open(image_filepath, 'wb') as f: f.write(image_bytes)
-                             logger.info(f"Saved plot: {image_filepath}")
-                             saved_image_paths[variable] = image_filepath # Store path
-                             num_plots_succeeded += 1
-                             
-                             # Copy to Realtime Directory +++
-                             # Do this immediately after successful save
-                             if realtime_dir:
-                                 realtime_filename = f"realtime_{variable}_{elevation_code}.png" # Construct filename
-                                 realtime_filepath = os.path.join(realtime_dir, realtime_filename)
-                                 realtime_filepath_tmp = f"{realtime_filepath}.{os.getpid()}.tmp" # Temp name
-                                 try:
-                                     os.makedirs(realtime_dir, exist_ok=True) # Ensure target dir exists
-                                     shutil.copyfile(image_filepath, realtime_filepath_tmp) # Copy to temp
-                                     os.replace(realtime_filepath_tmp, realtime_filepath)    # Atomic replace
-                                     logger.debug(f"Updated realtime image: {realtime_filepath}")
-                                 except OSError as copy_err:
-                                     logger.error(f"Failed to copy/replace realtime image {realtime_filepath}: {copy_err}")
-                                     # Cleanup temp file if replace failed
-                                     if os.path.exists(realtime_filepath_tmp):
-                                         try: os.remove(realtime_filepath_tmp)
-                                         except OSError: pass # Ignore cleanup error
-                         except IOError as e:
-                             logger.error(f"Failed to save plot '{image_filepath}': {e}")
-                             overall_success = False # Saving plot is critical if plotting required
-                     else:
-                         logger.warning(f"Failed to generate image bytes for variable '{variable}'.")
-                         overall_success = False # Generating plot is critical if required
+                    image_bytes = create_ppi_image(ds_geo, variable, plot_style, watermark_path, watermark_zoom)
+                    if image_bytes:
+                        image_sub_dir = os.path.join(images_dir, variable, date_str_plot, elevation_code_plot)
+                        os.makedirs(image_sub_dir, exist_ok=True)
+                        image_filename = f"{variable}_{elevation_code_plot}_{datetime_file_str_plot}.png"
+                        image_filepath = os.path.join(image_sub_dir, image_filename)
+                        try:
+                            with open(image_filepath, 'wb') as f:
+                                f.write(image_bytes)
+                            logger.info(f"Saved plot: {image_filepath}")
+                            saved_image_paths[variable] = image_filepath
+                            num_plots_succeeded += 1
 
-                 # Check if at least one plot succeeded if plotting was the goal
-                 local_plots_succeeded = num_plots_succeeded > 0
-                 if plotting_required and not local_plots_succeeded:
-                     logger.error("Plotting was required, but failed to generate/save any plots.")
-                     overall_success = False # Set failure flag
+                            if realtime_dir:
+                                realtime_filename = f"realtime_{variable}_{elevation_code_plot}.png"
+                                realtime_filepath = os.path.join(realtime_dir, realtime_filename)
+                                realtime_filepath_tmp = f"{realtime_filepath}.{os.getpid()}.tmp"
+                                try:
+                                    os.makedirs(realtime_dir, exist_ok=True)
+                                    shutil.copyfile(image_filepath, realtime_filepath_tmp)
+                                    os.replace(realtime_filepath_tmp, realtime_filepath)
+                                    logger.debug(f"Updated realtime image: {realtime_filepath}")
+                                except OSError as copy_err:
+                                    logger.error(
+                                        f"Failed to copy/replace realtime image {realtime_filepath}: {copy_err}")
+                                    if os.path.exists(realtime_filepath_tmp):
+                                        try:
+                                            os.remove(realtime_filepath_tmp)
+                                        except OSError:
+                                            pass
+                        except IOError as e:
+                            logger.error(f"Failed to save plot '{image_filepath}': {e}")
+                            overall_success = False
+                    else:
+                        logger.warning(f"Failed to generate image bytes for variable '{variable}'.")
+                        overall_success = False
 
+                local_plots_succeeded = num_plots_succeeded > 0
+                if plotting_required and not local_plots_succeeded:
+                    logger.error("Plotting required, but failed to generate/save any plots.")
+                    overall_success = False
             elif not plotting_required:
-                 logger.debug("Skipping plot generation as not required by config.")
-                 local_plots_succeeded = True # Not required = success for this step
+                logger.debug("Skipping plot generation as not required by config.")
+                local_plots_succeeded = True
 
         # --- Handle Scan File ---
-        moved_filepath = filepath # Default to original path
+        moved_filepath = filepath
         move_succeeded = True
 
-        # Only move if NOT in 'ftp_only' mode for scans
-        if scan_upload_mode != 'ftp_only':
+        if not overall_success:  # If prior critical steps like reading or getting elev/dt failed.
+            logger.warning("Skipping scan file move due to previous critical errors.")
+            move_succeeded = False
+        elif scan_upload_mode != 'ftp_only':
             if move_local_in_standard and output_dir:
-                logger.debug(f"Attempting to move scan file: {filepath} -> {output_dir}")
-                try:
-                    moved_path_result = move_processed_file(filepath, output_dir)
-                    if moved_path_result:
-                        moved_filepath = moved_path_result
-                        logger.info(f"Moved scan file to: {moved_filepath}")
-                    else:
+                if scan_elevation_val is not None and scan_datetime_val is not None:
+                    logger.debug(f"Attempting to move scan file: {filepath} to {output_dir} "
+                                 f"(Elev: {scan_elevation_val:.2f}, Time: {scan_datetime_val.isoformat()})")
+                    try:
+                        moved_path_result = move_processed_file(
+                            filepath, output_dir, scan_elevation_val, scan_datetime_val  # NEW CALL
+                        )
+                        if moved_path_result:
+                            moved_filepath = moved_path_result
+                            logger.info(f"Moved scan file to: {moved_filepath}")
+                        else:
+                            move_succeeded = False
+                            overall_success = False
+                            logger.error(f"Failed to move scan file locally: {filepath}")
+                    except Exception as move_err:
                         move_succeeded = False
-                        overall_success = False # Failed to move when expected
-                        logger.error(f"Failed to move scan file locally: {filepath}")
-                except Exception as move_err:
+                        overall_success = False
+                        logger.error(f"Error moving source file {filepath}: {move_err}", exc_info=True)
+                else:
                     move_succeeded = False
                     overall_success = False
-                    logger.error(f"Error moving source file {filepath}: {move_err}", exc_info=True)
+                    logger.error(f"Cannot move scan file: elevation or datetime not available from dataset {filepath}.")
             else:
-                logger.debug("Local move is disabled or output_dir not set (in standard/disabled mode).")
+                logger.debug(
+                    "Local move is disabled or output_dir not set (in standard/disabled mode). File remains at original path.")
         else:
-            logger.debug(f"Scan file local move skipped due to scan_upload_mode='ftp_only'.")
-
+            logger.debug("Scan file local move skipped due to scan_upload_mode='ftp_only'.")
 
         # --- Queueing Logic ---
-        if not overall_success: # Don't queue if critical steps failed
-             logger.warning("Skipping FTP queueing due to previous errors.")
-             return False
+        if not overall_success:
+            logger.warning("Skipping FTP queueing due to previous errors.")
+            return False  # Ensure we don't proceed if overall_success became false
 
         scan_queued = False
         images_queued = False
 
-        # Queue Scan File?
         if scan_upload_mode == 'ftp_only':
-             # Special case handled earlier if image_mode was disabled.
-             # If image_mode is 'only' or 'also', we process plots first, then queue scan here.
-             logger.info(f"Mode 'ftp_only' (scan): Queuing scan file {filepath} after potential plotting.")
-             scan_queueing_succeeded = True
-             for server_config in ftp_servers:
-                  if not add_scan_to_queue(filepath, server_config):
-                      scan_queueing_succeeded = False # Track critical add failure
-             if not scan_queueing_succeeded: overall_success = False
-             scan_queued = True
-
+            logger.info(f"Mode 'ftp_only' (scan): Queuing scan file {filepath} after potential plotting.")
+            current_scan_queueing_succeeded = True
+            for server_config in ftp_servers:
+                if not add_scan_to_queue(filepath, server_config):  # Use original filepath
+                    current_scan_queueing_succeeded = False
+            if not current_scan_queueing_succeeded: overall_success = False
+            scan_queued = True
         elif scan_upload_mode == 'standard' and upload_scans_in_standard_mode and move_succeeded:
-             logger.info(f"Mode 'standard' (scan): Queuing scan file {moved_filepath}")
-             scan_queueing_succeeded = True
-             for server_config in ftp_servers:
-                  if not add_scan_to_queue(moved_filepath, server_config):
-                      scan_queueing_succeeded = False
-             if not scan_queueing_succeeded: overall_success = False # Consider if this is critical failure
-             scan_queued = True
+            logger.info(f"Mode 'standard' (scan): Queuing MOVED scan file {moved_filepath}")
+            current_scan_queueing_succeeded = True
+            for server_config in ftp_servers:
+                if not add_scan_to_queue(moved_filepath, server_config):
+                    current_scan_queueing_succeeded = False
+            if not current_scan_queueing_succeeded: overall_success = False
+            scan_queued = True
+        elif scan_upload_mode == 'standard' and upload_scans_in_standard_mode and not move_succeeded:
+            logger.warning(
+                f"Scan mode is 'standard' and upload enabled, but file move failed or was skipped. Scan at {filepath} will not be queued.")
 
-        # Queue Image Files?
-        if local_plots_succeeded and saved_image_paths: # Check if plots were actually saved
+        if local_plots_succeeded and saved_image_paths:
             should_queue_images = False
             if image_upload_mode == 'only':
                 should_queue_images = True
             elif image_upload_mode == 'also':
-                # Queue if scan is 'ftp_only' OR (scan is 'standard' AND upload_images_in_standard is true)
                 if scan_upload_mode == 'ftp_only' or \
-                   (scan_upload_mode == 'standard' and upload_images_in_standard_mode):
+                        (scan_upload_mode == 'standard' and upload_images_in_standard_mode):
                     should_queue_images = True
 
             if should_queue_images:
                 logger.info(f"Queueing {len(saved_image_paths)} generated image(s)...")
-                image_queueing_succeeded = True
+                current_image_queueing_succeeded = True
                 for variable, img_path in saved_image_paths.items():
                     for server_config in ftp_servers:
                         if not add_image_to_queue(img_path, server_config):
-                             image_queueing_succeeded = False # Track critical add failure
-                if not image_queueing_succeeded: overall_success = False
+                            current_image_queueing_succeeded = False
+                if not current_image_queueing_succeeded: overall_success = False
                 images_queued = True
 
-        # --- Final Logging and Return ---
         if scan_queued: logger.info("Scan file(s) queued for upload.")
         if images_queued: logger.info("Image file(s) queued for upload.")
-        if not scan_queued and not images_queued and (scan_upload_mode != 'disabled' or image_upload_mode != 'disabled'):
-            logger.debug("No files were queued for upload based on current modes.")
+        if not scan_queued and not images_queued and (
+                scan_upload_mode != 'disabled' or image_upload_mode != 'disabled'):
+            logger.debug("No files were queued for upload based on current modes and outcomes.")
 
         logger.info(f"Processing finished for {filepath}. Overall success: {overall_success}")
         return overall_success
@@ -316,73 +299,55 @@ def process_new_scan(filepath: str, config: Optional[Dict[str, Any]] = None) -> 
         logger.error(f"Unhandled error during processing of {filepath}: {e}", exc_info=True)
         return False
     finally:
-        if ds is not None:
-            try: ds.close()
-            except Exception: pass
+        if ds_geo is not None:  # Close ds_geo if it was created
+            try:
+                ds_geo.close()
+            except Exception:
+                pass
+        if ds is not None:  # ds should be closed if ds_geo was not created or if ds_geo is different
+            try:
+                ds.close()
+            except Exception:
+                pass
 
+
+# `generate_historical_plots` remains unchanged as it calls `process_new_scan`
+# and the logic for not re-moving files is handled by passing a modified config
+# or ideally by adding a `move_file=False` parameter to `process_new_scan` in future.
 def generate_historical_plots(start_dt: datetime, end_dt: datetime, config: Optional[Dict[str, Any]] = None) -> None:
-    """
-    Finds processed radar scan files within a date range and regenerates plots for them.
-
-    Args:
-        start_dt: The start datetime for the reprocessing range.
-        end_dt: The end datetime for the reprocessing range.
-        config: The application configuration dictionary (optional, uses get_config() if None).
-    """
     if config is None:
         config = get_config()
-
     logger.info(f"Starting historical plot generation from {start_dt} to {end_dt}.")
-
-    # Directory where processed .scnx.gz files are stored (used for searching)
     processed_data_dir = config.get('app', {}).get('output_dir')
-
     if not processed_data_dir:
-        logger.error("Configuration missing 'app.output_dir'. Cannot find historical files.")
+        logger.error("Config missing 'app.output_dir'. Cannot find historical files.")
         return
 
-    # --- 1. Find Files in Range ---
-    # Note: get_filepaths_in_range expects the base dir where YYYYMMDD folders are
-    filepaths_tuples = get_filepaths_in_range(processed_data_dir, start_dt, end_dt)
+    # Use the NEW get_filepaths_in_range that supports ElevationCode/YYYYMMDD
+    # For reprocess, we want all elevations, so elevation_filter is None.
+    filepaths_tuples = get_filepaths_in_range(processed_data_dir, start_dt, end_dt, elevation_filter=None)
 
     if not filepaths_tuples:
         logger.info("No historical scan files found in the specified range.")
         return
-
     logger.info(f"Found {len(filepaths_tuples)} files to reprocess.")
 
-    # --- 2. Loop and Process Each File ---
     processed_count = 0
     failed_count = 0
-    # Consider adding tqdm here if running interactively for long periods
-    # from tqdm import tqdm
-    # for filepath, _ in tqdm(filepaths_tuples, desc="Reprocessing Scans"):
     for filepath, file_dt in filepaths_tuples:
-         logger.info(f"Reprocessing historical file: {filepath} (Time: {file_dt})")
-         # We pass the config down, process_new_scan should NOT move the file again
-         # We need a way to tell process_new_scan not to move the file during reprocessing.
-         # Option 1: Modify process_new_scan to accept a `move_file=False` argument.
-         # Option 2: Temporarily modify the config dictionary passed down. (Less clean)
-         # Let's assume Option 1 is preferred for cleaner design (but requires modifying process_new_scan slightly).
-         # For now, we rely on the `move_file_after_processing` flag in the main config,
-         # or we comment out the move call in process_new_scan if it's problematic.
-         # A better approach: Add a flag to config or argument to disable move during reprocessing.
+        logger.info(f"Reprocessing historical file: {filepath} (Time: {file_dt})")
+        temp_config = config.copy()  # Create a shallow copy
+        if 'app' not in temp_config: temp_config['app'] = {}
+        temp_config['app']['move_file_after_processing'] = False  # Disable moving
 
-         # Let's simulate disabling move by modifying a copy of the config
-         temp_config = config.copy()
-         if 'app' not in temp_config: temp_config['app'] = {}
-         temp_config['app']['move_file_after_processing'] = False # Disable moving for reprocessing
-
-         try:
-             # Pass the modified config to prevent moving
-             success = process_new_scan(filepath, config=temp_config)
-             if success:
-                 processed_count += 1
-             else:
-                 failed_count += 1
-                 logger.warning(f"Failed to reprocess: {filepath}")
-         except Exception as e:
-             failed_count += 1
-             logger.error(f"Critical error during reprocessing of {filepath}: {e}", exc_info=True)
-
+        try:
+            success = process_new_scan(filepath, config=temp_config)
+            if success:
+                processed_count += 1
+            else:
+                failed_count += 1
+                logger.warning(f"Failed to reprocess: {filepath}")
+        except Exception as e:
+            failed_count += 1
+            logger.error(f"Critical error reprocessing {filepath}: {e}", exc_info=True)
     logger.info(f"Historical plot generation finished. Processed: {processed_count}, Failed: {failed_count}")
