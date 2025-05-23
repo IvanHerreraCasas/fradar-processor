@@ -411,7 +411,7 @@ async def get_timeseries_job_data(
                  df_out = df.copy()
                  if "timestamp" in df_out.columns and pd.api.types.is_datetime64_any_dtype(df_out["timestamp"]):
                       df_out["timestamp"] = df_out["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                 df_out = df_out.fillna(value=pd.NA).replace({pd.NA: None})
+                 df_out = df_out.astype(object).where(pd.notnull(df_out), None)
                  json_data = df_out.to_dict(orient="records")
                  return JSONResponse(content=json_data)
 
