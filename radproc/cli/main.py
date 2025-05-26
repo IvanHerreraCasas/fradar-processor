@@ -14,7 +14,7 @@ import sys
 import logging
 import pandas as pd
 from logging.handlers import RotatingFileHandler
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import shutil
 
@@ -32,7 +32,8 @@ from ..core.utils.upload_queue import start_worker, stop_worker
 # --- NEW Imports for index-scans ---
 from ..core.data import extract_scan_key_metadata
 from ..core.utils.helpers import parse_datetime_from_filename, move_processed_file
-from ..core.db_manager import get_connection, release_connection, add_scan_to_log
+from ..core.db_manager import get_connection, release_connection, add_scan_to_log, get_ungrouped_scans_for_volume_assignment,update_volume_identifier_for_scans, get_potential_volume_members_by_time_and_seq
+
 try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
@@ -282,7 +283,6 @@ def cli_reorg_scans(args: argparse.Namespace):
 
         if not scnx_files_in_dir:
             logger.info(f"No .scnx.gz files found in {date_dir_path}.")
-            # ... (delete_empty logic remains the same) ...
             if args.delete_empty:
                 try:
                     if not os.listdir(date_dir_path):
@@ -474,6 +474,146 @@ def cli_index_scans(args: argparse.Namespace):
     logger.info(f"Files Skipped:  {skipped_count} (Metadata error or already indexed)")
     logger.info(f"Errors:         {error_count}")
     logger.info("Scan indexing finished.")
+
+
+def cli_group_volumes(args: argparse.Namespace):
+    """Handler for the 'group-volumes' command."""
+    logger = logging.getLogger(__name__)
+    logger.info("=== Starting Volume Grouping ===")
+    if args.dry_run:
+        logger.info("DRY RUN active: No changes will be made to the database.")
+
+    conn = None
+    grouped_volumes_count = 0
+    scans_assigned_to_volume = 0
+    error_count = 0
+
+    # Default config values (can be overridden by config file later if desired)
+    default_time_window_minutes = get_setting('volume_grouping.time_window_minutes', 5)
+    default_min_scans_in_volume = get_setting('volume_grouping.min_scans_in_volume', 2)
+    default_elevation_tolerance_for_volume = get_setting('volume_grouping.elevation_tolerance', 0.1)
+
+    time_window = timedelta(minutes=args.time_window_minutes or default_time_window_minutes)
+    min_scans = args.min_scans_in_volume or default_min_scans_in_volume
+    elevation_tolerance = default_elevation_tolerance_for_volume  # Not making CLI arg for now for simplicity
+
+    logger.info(
+        f"Parameters: Lookback={args.lookback_hours}h, Limit={args.limit}, TimeWindow={time_window}, MinScans={min_scans}")
+
+    try:
+        conn = get_connection()
+        logger.info("Database connection established.")
+
+        # Get all ungrouped scans initially, sorted by time
+        # These are dictionaries: {'scan_log_id', 'filepath', 'precise_timestamp', 'elevation', 'scan_sequence_number'}
+        ungrouped_scans = get_ungrouped_scans_for_volume_assignment(conn, args.lookback_hours, args.limit)
+
+        if not ungrouped_scans:
+            logger.info("No ungrouped scans found to process.")
+            return
+
+        logger.info(f"Fetched {len(ungrouped_scans)} ungrouped scans for potential volume assignment.")
+
+        # Keep track of scans that have been assigned to a volume in this run
+        # to avoid trying to assign them again if they appear as candidates for another base scan.
+        processed_scan_ids_this_run = set()
+
+        # Sort by precise_timestamp to process chronologically
+        ungrouped_scans.sort(key=lambda x: x['precise_timestamp'])
+
+        iterator_func = tqdm if TQDM_AVAILABLE else tqdm_fallback_iterator
+
+        # Iterate through potential base scans (_0 scans)
+        for base_scan_candidate in iterator_func(ungrouped_scans, desc="Processing Base Scans", unit="scan"):
+            if base_scan_candidate['scan_log_id'] in processed_scan_ids_this_run:
+                continue  # Already processed as part of another volume
+
+            if base_scan_candidate['scan_sequence_number'] == 0:
+                current_base_scan = base_scan_candidate
+                volume_id_ts = current_base_scan['precise_timestamp']
+                base_elevation = current_base_scan['elevation']
+                logger.debug(f"Found potential base scan _0: ID {current_base_scan['scan_log_id']} at {volume_id_ts}")
+
+                # Define search window for members
+                start_search_ts = volume_id_ts - (time_window / 2)  # Search around the base scan time
+                end_search_ts = volume_id_ts + time_window  # Allow members to be slightly after
+
+                # Fetch potential members (ungrouped, sequence > 0, within time window and elevation tolerance)
+                # get_potential_volume_members_by_time_and_seq fetches ungrouped scans
+                potential_members_raw = get_potential_volume_members_by_time_and_seq(
+                    conn,
+                    start_ts_range=start_search_ts,
+                    end_ts_range=end_search_ts,
+                    min_seq_num=1  # We only want sequence > 0 for members
+                )
+
+                current_volume_scans = [current_base_scan]
+
+                # Filter potential_members by elevation and ensure they haven't been processed
+                for member_candidate in potential_members_raw:
+                    if member_candidate['scan_log_id'] in processed_scan_ids_this_run:
+                        continue
+                    if abs(member_candidate['elevation'] - base_elevation) <= elevation_tolerance:
+                        # Basic check: ensure member is not too far in time from base _0 scan
+                        if volume_id_ts <= member_candidate['precise_timestamp'] < (volume_id_ts + time_window):
+                            current_volume_scans.append(member_candidate)
+
+                # Sort by sequence number and check for reasonable continuity (optional, can be complex)
+                current_volume_scans.sort(key=lambda x: x['scan_sequence_number'])
+
+                # Simple check for sequence uniqueness within the assembled volume
+                seq_numbers_in_volume = {s['scan_sequence_number'] for s in current_volume_scans}
+                if len(seq_numbers_in_volume) != len(current_volume_scans):
+                    logger.warning(
+                        f"Duplicate sequence numbers found for potential volume based at {volume_id_ts}. Skipping.")
+                    # Potentially mark base_scan_candidate as processed to avoid retrying it if it's truly problematic
+                    # processed_scan_ids_this_run.add(current_base_scan['scan_log_id']) # Caution with this
+                    continue
+
+                if len(current_volume_scans) >= min_scans:
+                    scan_ids_to_update = [s['scan_log_id'] for s in current_volume_scans]
+
+                    if args.dry_run:
+                        logger.info(
+                            f"DRY RUN: Would assign Volume ID {volume_id_ts} to {len(scan_ids_to_update)} scans (IDs: {scan_ids_to_update})")
+                        logger.info(
+                            f"DRY RUN: Volume members (Seq #): {[s['scan_sequence_number'] for s in current_volume_scans]}")
+
+                    else:
+                        logger.info(f"Assigning Volume ID {volume_id_ts} to {len(scan_ids_to_update)} scans...")
+                        logger.info(f"Members (Seq #): {[s['scan_sequence_number'] for s in current_volume_scans]}")
+                        if update_volume_identifier_for_scans(conn, scan_ids_to_update, volume_id_ts):
+                            logger.info(f"Successfully updated DB for volume {volume_id_ts}.")
+                            scans_assigned_to_volume += len(scan_ids_to_update)
+                            grouped_volumes_count += 1
+                        else:
+                            logger.error(f"Failed to update DB for volume {volume_id_ts}.")
+                            error_count += 1
+
+                    # Mark all these scans as processed for this run, regardless of dry_run
+                    for scan_id in scan_ids_to_update:
+                        processed_scan_ids_this_run.add(scan_id)
+                else:
+                    logger.debug(
+                        f"Potential volume at {volume_id_ts} has {len(current_volume_scans)} members, less than min {min_scans}. Skipping.")
+            # else: # Not a base scan (_0), will be picked up by its respective base scan if it's part of a volume.
+            #    pass
+
+    except Exception as e:
+        logger.exception("An unexpected error occurred during volume grouping:")
+        error_count += 1
+    finally:
+        if conn:
+            release_connection(conn)
+            logger.info("Database connection released.")
+
+    logger.info("--- Volume Grouping Summary ---")
+    logger.info(f"New Volumes Grouped:      {grouped_volumes_count}")
+    logger.info(f"Total Scans Assigned:   {scans_assigned_to_volume}")
+    logger.info(f"Errors during DB update: {error_count}")
+    logger.info("Volume grouping finished.")
+
+
 # +++++++++++++++++++++++++++++++++++++++++++++
 
 def main():
@@ -562,7 +702,44 @@ def main():
         help="Simulate the indexing: show what would be added without writing to the database."
     )
     index_parser.set_defaults(func=cli_index_scans) # Link to the handler function
-    # ++++++++++++++++++++++++++++++
+
+    group_volumes_parser = subparsers.add_parser(
+        "group-volumes",
+        help="Group scans in radproc_scan_log by assigning a common volume_identifier.",
+        description="Identifies scans with sequence_number 0, uses their precise_timestamp as a volume_identifier,\n"
+                    "and assigns this ID to other related scans (sequence > 0) that match criteria\n"
+                    "(time proximity, elevation) to form a complete volume."
+    )
+    group_volumes_parser.add_argument(
+        "--lookback-hours",
+        type=int,
+        default=24,  # Default lookback period
+        help="How many hours back to look for ungrouped scans (default: 24)."
+    )
+    group_volumes_parser.add_argument(
+        "--limit",
+        type=int,
+        default=1000,  # Default limit on scans fetched at once
+        help="Maximum number of ungrouped scans to process in one go (default: 1000)."
+    )
+    group_volumes_parser.add_argument(
+        "--time-window-minutes",
+        type=int,
+        # Default will be taken from get_setting or hardcoded in the function
+        help=f"Time window in minutes around a base scan (_0) to search for other volume members (default: from config or {get_setting('volume_grouping.time_window_minutes', 5)} min)."
+    )
+    group_volumes_parser.add_argument(
+        "--min-scans-in-volume",
+        type=int,
+        # Default will be taken from get_setting or hardcoded
+        help=f"Minimum number of scans required to form a valid volume (default: from config or {get_setting('volume_grouping.min_scans_in_volume', 2)})."
+    )
+    group_volumes_parser.add_argument(
+        "--dry-run",
+        action='store_true',
+        help="Simulate the grouping: show what would be updated without writing to the database."
+    )
+    group_volumes_parser.set_defaults(func=cli_group_volumes)
 
     # 4. Parse Arguments
     args = parser.parse_args()
