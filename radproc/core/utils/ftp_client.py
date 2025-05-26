@@ -8,8 +8,8 @@ import re
 from typing import Dict, Any
 
 # Import helper for parsing date from filename AND getting scan elevation
+from ..data import extract_scan_key_metadata
 from .helpers import parse_datetime_from_filename
-from ..data import get_scan_elevation
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def upload_scan_file(
         return False
 
     # --- Get Scan Elevation ---
-    scan_elevation = get_scan_elevation(local_filepath)
+    _, scan_elevation, _ = extract_scan_key_metadata(local_filepath)
     if scan_elevation is None:
         logger.error(f"[FTP Client] Cannot get elevation for '{filename}'. Upload aborted.")
         return False
