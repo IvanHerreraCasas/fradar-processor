@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # --- Filename Sequence Number Parser ---
 # Example: extracts '0' from "..._0.scnx.gz" or '10' from "..._10.scnx.gz"
-SCAN_SEQUENCE_REGEX = re.compile(r'_(\d{1,2})\.scnx\.gz$')  # Assuming 1 or 2 digits for N
+SCAN_SEQUENCE_REGEX = re.compile(r'_(\d{3})\.scnx\.gz$')  # Assuming 1 or 2 digits for N
 
 
 def parse_scan_sequence_number(filename: str) -> Optional[int]:
