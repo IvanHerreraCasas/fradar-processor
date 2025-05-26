@@ -12,15 +12,13 @@ from datetime import datetime, timezone
 from .config import get_all_points_config, get_setting
 from .utils.geo import get_dataset_crs, georeference_dataset, transform_point_to_dataset_crs
 # CSV handler import will be mostly for generate_point_timeseries & calculate_accumulation's export/legacy parts
-from .utils.csv_handler import read_timeseries_csv, append_to_timeseries_csv, write_metadata_header_if_needed, \
-    write_timeseries_csv
-from .data import get_filepaths_in_range, read_scan, \
-    get_scan_elevation  # get_scan_elevation might be used by historical generation
+from .utils.csv_handler import read_timeseries_csv, write_timeseries_csv  # Removed unused CSV functions for this step
+# data.py imports will be adjusted as get_filepaths_in_range is deprecated
+from .data import read_scan  # extract_scan_key_metadata will be used by processor, not directly here
 # Import DB Manager
 from .db_manager import (
     get_connection, release_connection, get_or_create_variable_id,
     batch_insert_timeseries_data, update_point_cached_indices_in_db
-    # We might need get_point_db_id if we don't get point_id from get_all_points_config directly
 )
 
 logger = logging.getLogger(__name__)
@@ -87,7 +85,7 @@ Optional[Tuple[int, int]]:
             return None
         logger.debug(f"Minimum distance ({min_dist:.2f}m) found at indices: Az={az_idx}, Ran={rg_idx}.")
         return int(az_idx), int(rg_idx)
-    except ValueError:
+    except ValueError:  # nanargmin raises ValueError if all inputs are NaN
         logger.warning("Could not find minimum distance (all distances likely NaN).")
         return None
     except Exception as e:
@@ -104,8 +102,10 @@ def extract_point_value(ds: xr.Dataset, variable: str, az_idx: int, rg_idx: int)
         if variable not in ds.data_vars:
             logger.warning(f"Variable '{variable}' not found in dataset for value extraction.")
             return np.nan
-        data_point = ds[variable].isel(time=0, azimuth=az_idx, range=rg_idx)
+        # Assumes ds_geo has already been prepared with a single time and elevation dimension
+        data_point = ds[variable].isel(time=0, elevation=0, azimuth=az_idx, range=rg_idx)
         value = data_point.compute().item() if hasattr(data_point.data, 'compute') else data_point.item()
+
         if isinstance(value, (int, float, np.number)) and not np.isnan(value):
             return float(value)
         logger.debug(f"Invalid or NaN value for '{variable}' at az={az_idx}, rg={rg_idx}: {value}")
@@ -120,17 +120,25 @@ def extract_point_value(ds: xr.Dataset, variable: str, az_idx: int, rg_idx: int)
 
 # --- Orchestrator Functions ---
 
-def update_timeseries_for_scan(ds_geo: xr.Dataset):
+def update_timeseries_for_scan(ds_geo: xr.Dataset,
+                               scan_precise_timestamp: datetime,
+                               scan_elevation: float):
     """
     Updates timeseries data in PostgreSQL for relevant points using data from a single scan.
     Extracts all 'timeseries_default_variables' for points whose 'target_elevation'
-    matches the scan's elevation.
+    matches the scan's elevation. The scan_precise_timestamp and scan_elevation are
+    passed from processor.py after being extracted via extract_scan_key_metadata.
+
+    Args:
+        ds_geo: The georeferenced xarray.Dataset for the current scan (single time step).
+        scan_precise_timestamp: The precise, timezone-aware UTC timestamp of the scan.
+        scan_elevation: The elevation of the scan.
     """
-    logger.info("Starting DB timeseries update for current scan...")
+    logger.info(
+        f"Starting DB timeseries update for scan at {scan_precise_timestamp.isoformat()}, Elev: {scan_elevation:.2f}°")
 
     # 1. Get Configuration
-    # get_all_points_config now reads from the database via config.py
-    all_points_db_config: List[Dict[str, Any]] = get_all_points_config()
+    all_points_db_config: List[Dict[str, Any]] = get_all_points_config()  # Reads from DB via config.py
     default_variables_to_extract: List[str] = get_setting('app.timeseries_default_variables', [])
 
     if not all_points_db_config:
@@ -142,30 +150,12 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset):
 
     conn = None
     try:
-        # 2. Extract Scan Info
-        scan_ts_precise = None
-        scan_elevation = None
-        try:
-            scan_time_val = ds_geo['time'].values.item()  # Assumes single time value
-            # Ensure scan_ts_precise is a timezone-aware Python datetime object (UTC)
-            py_dt = pd.to_datetime(scan_time_val).to_pydatetime()
-            scan_ts_precise = py_dt.replace(tzinfo=timezone.utc) if py_dt.tzinfo is None else py_dt.astimezone(
-                timezone.utc)
-
-            scan_elevation = float(ds_geo['elevation'].item())  # Assumes single elevation value
-        except Exception as e:
-            logger.error(f"Failed to extract time/elevation from dataset for timeseries update: {e}", exc_info=True)
-            return
-
-        logger.debug(
-            f"Processing timeseries update for scan: Time={scan_ts_precise.isoformat()}, ScanElev={scan_elevation:.2f}")
-
-        conn = get_connection()  # Get DB connection
+        conn = get_connection()
         new_data_for_batch_insert: List[Dict[str, Any]] = []
-        points_processed_this_scan = 0
+        points_contributing_data_count = 0
         elevation_tolerance = 0.1  # degrees
 
-        # 3. Loop Through Points
+        # 2. Loop Through Points defined in DB
         for point_config in all_points_db_config:
             point_id = point_config.get('point_id')
             point_name = point_config.get('point_name')
@@ -175,7 +165,7 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset):
 
             if not all([point_id is not None, point_name, target_lat is not None,
                         target_lon is not None, point_target_elevation is not None]):
-                logger.warning(f"Skipping point due to incomplete DB configuration: ID={point_id}, Name={point_name}")
+                logger.warning(f"Skipping point due to incomplete DB configuration: {point_config}")
                 continue
 
             # Check if scan elevation matches this point's target elevation
@@ -185,14 +175,14 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset):
                 continue
 
             logger.debug(
-                f"Point '{point_name}' (ID: {point_id}) matches scan elevation. Processing variables: {default_variables_to_extract}")
+                f"Point '{point_name}' (ID: {point_id}) matches scan elevation. Processing default variables...")
 
             # Get or Calculate Radar Grid Indices for this point
             az_idx = point_config.get('cached_azimuth_index')
             rg_idx = point_config.get('cached_range_index')
             current_indices: Optional[Tuple[int, int]] = None
 
-            if az_idx is not None and rg_idx is not None:
+            if az_idx is not None and rg_idx is not None:  # Check if None, not just falsy (0 is valid)
                 current_indices = (int(az_idx), int(rg_idx))
                 logger.debug(
                     f"Using cached DB indices for '{point_name}': Az={current_indices[0]}, Rg={current_indices[1]}")
@@ -201,7 +191,6 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset):
                 calculated_indices = find_nearest_indices(ds_geo, target_lat, target_lon)
                 if calculated_indices:
                     current_indices = calculated_indices
-                    # Save newly calculated indices to DB for this point_id
                     if not update_point_cached_indices_in_db(conn, point_id, current_indices[0], current_indices[1]):
                         logger.warning(
                             f"Failed to save updated indices to DB for point '{point_name}' (ID: {point_id}).")
@@ -210,46 +199,46 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset):
                             f"Calculated and saved indices for '{point_name}' (ID: {point_id}): {current_indices}")
                 else:
                     logger.warning(
-                        f"Could not find valid radar grid indices for point '{point_name}'. Skipping variables for this point.")
-                    continue  # Skip to next point if indices cannot be found
-
-            if not current_indices:  # Should have been caught by continue above, but defensive check
-                logger.warning(f"Indices still not available for point '{point_name}'. Skipping.")
-                continue
-
-            # Extract all default variables for this point
-            processed_vars_for_point = 0
-            for var_name in default_variables_to_extract:
-                variable_id = get_or_create_variable_id(conn, var_name)  # Pass units/desc if available
-                if variable_id is None:
-                    logger.error(
-                        f"Could not get/create DB ID for variable '{var_name}' for point '{point_name}'. Skipping this variable.")
+                        f"Could not find valid radar grid indices for point '{point_name}'. Skipping variables for this point in this scan.")
                     continue
 
-                value = extract_point_value(ds_geo, var_name, current_indices[0], current_indices[1])
+            if not current_indices:
+                continue
+
+            # Extract all default variables for this point using the determined indices
+            point_had_data_added = False
+            for var_name_to_extract in default_variables_to_extract:
+                variable_id = get_or_create_variable_id(conn, var_name_to_extract)
+                if variable_id is None:
+                    logger.error(
+                        f"Could not get/create DB ID for var '{var_name_to_extract}' for point '{point_name}'. Skipping this variable.")
+                    continue
+
+                value = extract_point_value(ds_geo, var_name_to_extract, current_indices[0], current_indices[1])
                 if not np.isnan(value):
                     new_data_for_batch_insert.append({
-                        'timestamp': scan_ts_precise,
+                        'timestamp': scan_precise_timestamp,  # Passed as argument
                         'point_id': point_id,
                         'variable_id': variable_id,
                         'value': value
                     })
-                    processed_vars_for_point += 1
-                    logger.debug(f"Point '{point_name}', Var '{var_name}': Value={value:.2f}")
+                    point_had_data_added = True
+                    logger.debug(
+                        f"Point '{point_name}', Var '{var_name_to_extract}': Value={value:.2f} prepared for insert.")
                 else:
-                    logger.debug(f"Point '{point_name}', Var '{var_name}': Extracted NaN or invalid value.")
+                    logger.debug(f"Point '{point_name}', Var '{var_name_to_extract}': Extracted NaN or invalid value.")
 
-            if processed_vars_for_point > 0:
-                points_processed_this_scan += 1
+            if point_had_data_added:
+                points_contributing_data_count += 1
 
-        # 4. Batch Insert Data into PostgreSQL
+        # 3. Batch Insert Data into PostgreSQL
         if new_data_for_batch_insert:
             logger.info(
-                f"Attempting to batch insert {len(new_data_for_batch_insert)} data points for {points_processed_this_scan} point(s)...")
-            if batch_insert_timeseries_data(conn, new_data_for_batch_insert):  # Assumes batch_insert handles commit
+                f"Attempting to batch insert {len(new_data_for_batch_insert)} data points for {points_contributing_data_count} point(s)...")
+            if batch_insert_timeseries_data(conn, new_data_for_batch_insert):
                 logger.info(f"Successfully inserted {len(new_data_for_batch_insert)} data points.")
             else:
-                logger.error("Batch insert failed for timeseries data.")  # db_manager should log details
+                logger.error("Batch insert failed for timeseries data.")
         else:
             logger.info("No new timeseries data to insert from this scan.")
 
@@ -261,22 +250,22 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset):
         if conn:
             release_connection(conn)
 
-    logger.info(f"Database timeseries update finished for scan. Points contributing data: {points_processed_this_scan}")
+    logger.info(f"DB timeseries update finished for scan. Points contributing data: {points_contributing_data_count}")
 
 
-# --- generate_point_timeseries and calculate_accumulation will be refactored next ---
-# Placeholders remain for now:
+# --- generate_point_timeseries and calculate_accumulation placeholders ---
 def generate_point_timeseries(
         point_names: List[str],
         start_dt: datetime,
         end_dt: datetime,
-        specific_variables: Optional[List[str]] = None  # Changed from variable_overrides (dict) to list of vars
+        specific_variables: Optional[List[str]] = None
 ) -> bool:
     logger.warning("generate_point_timeseries: DB-aware implementation is PENDING. Current call is a placeholder.")
     if not point_names: return False
     logger.info(f"[Placeholder] generate_point_timeseries for points '{', '.join(point_names)}' "
-                f"from {start_dt} to {end_dt}. Vars: {specific_variables or get_setting('app.timeseries_default_variables', [])}")
-    return True  # Placeholder success
+                f"from {start_dt.isoformat()} to {end_dt.isoformat()}. "
+                f"Vars: {specific_variables or get_setting('app.timeseries_default_variables', [])}")
+    return True
 
 
 def calculate_accumulation(
@@ -288,12 +277,8 @@ def calculate_accumulation(
         output_file_path: str
 ) -> bool:
     logger.warning("calculate_accumulation: DB-aware implementation is PENDING. Current call is a placeholder.")
-    # This will call the new generate_point_timeseries, then query DB for rate data.
-
-    # Simulate a successful placeholder action that might create an empty/dummy CSV
     logger.info(f"[Placeholder] calculate_accumulation for point '{point_name}' to '{output_file_path}'.")
     try:
-        # Create a dummy output file for now to match expected behavior of some callers
         os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
         with open(output_file_path, 'w') as f:
             f.write("timestamp,value\n")  # Dummy CSV header
