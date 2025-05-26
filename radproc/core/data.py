@@ -3,7 +3,6 @@
 import xarray as xr
 import numpy as np
 import os
-import re  # For parsing sequence number
 import logging
 from datetime import datetime, timezone
 import pandas as pd
@@ -11,25 +10,9 @@ from typing import List, Optional, Tuple
 
 from .utils.helpers import parse_datetime_from_filename  # Keep for nominal_ts
 from .config import get_setting
+from .utils.helpers import parse_scan_sequence_number
 
 logger = logging.getLogger(__name__)
-
-# --- Filename Sequence Number Parser ---
-# Example: extracts '0' from "..._0.scnx.gz" or '10' from "..._10.scnx.gz"
-SCAN_SEQUENCE_REGEX = re.compile(r'_(\d{1,2})\.scnx\.gz$')  # Assuming 1 or 2 digits for N
-
-
-def _parse_scan_sequence_number(filename: str) -> Optional[int]:
-    """Parses the _N sequence number from a scan filename."""
-    match = SCAN_SEQUENCE_REGEX.search(filename)
-    if match:
-        try:
-            return int(match.group(1))
-        except ValueError:
-            logger.warning(f"Could not parse sequence number from matched group '{match.group(1)}' in {filename}")
-            return None
-    logger.debug(f"Scan sequence number pattern not found in filename: {filename}")
-    return None
 
 
 def _preprocess_scan(ds: xr.Dataset, azimuth_step: float) -> xr.Dataset:
@@ -154,7 +137,7 @@ def extract_scan_key_metadata(scan_filepath: str) -> Optional[Tuple[datetime, fl
     ds = None
     try:
         filename = os.path.basename(scan_filepath)
-        sequence_number = _parse_scan_sequence_number(filename)
+        sequence_number = parse_scan_sequence_number(filename)
         if sequence_number is None:
             logger.warning(
                 f"Could not parse sequence number from filename: {filename}. Cannot include in scan log accurately.")

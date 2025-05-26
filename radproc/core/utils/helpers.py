@@ -11,6 +11,23 @@ from ..config import get_setting # Import config access
 
 logger = logging.getLogger(__name__)
 
+# --- Filename Sequence Number Parser ---
+# Example: extracts '0' from "..._0.scnx.gz" or '10' from "..._10.scnx.gz"
+SCAN_SEQUENCE_REGEX = re.compile(r'_(\d{1,2})\.scnx\.gz$')  # Assuming 1 or 2 digits for N
+
+
+def parse_scan_sequence_number(filename: str) -> Optional[int]:
+    """Parses the _N sequence number from a scan filename."""
+    match = SCAN_SEQUENCE_REGEX.search(filename)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            logger.warning(f"Could not parse sequence number from matched group '{match.group(1)}' in {filename}")
+            return None
+    logger.debug(f"Scan sequence number pattern not found in filename: {filename}")
+    return None
+
 # --- Datetime Parsing Functions ---
 
 def parse_date_from_dirname(dir_name: str) -> Optional[date]:
