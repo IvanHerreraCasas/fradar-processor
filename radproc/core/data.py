@@ -3,15 +3,33 @@
 import xarray as xr
 import numpy as np
 import os
+import re  # For parsing sequence number
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+import pandas as pd
 from typing import List, Optional, Tuple
 
-from .utils.helpers import parse_datetime_from_filename, parse_date_from_dirname
-from .config import get_setting  # Import config access function
+from .utils.helpers import parse_datetime_from_filename  # Keep for nominal_ts
+from .config import get_setting
 
-# Setup logger for this module
 logger = logging.getLogger(__name__)
+
+# --- Filename Sequence Number Parser ---
+# Example: extracts '0' from "..._0.scnx.gz" or '10' from "..._10.scnx.gz"
+SCAN_SEQUENCE_REGEX = re.compile(r'_(\d{1,2})\.scnx\.gz$')  # Assuming 1 or 2 digits for N
+
+
+def _parse_scan_sequence_number(filename: str) -> Optional[int]:
+    """Parses the _N sequence number from a scan filename."""
+    match = SCAN_SEQUENCE_REGEX.search(filename)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            logger.warning(f"Could not parse sequence number from matched group '{match.group(1)}' in {filename}")
+            return None
+    logger.debug(f"Scan sequence number pattern not found in filename: {filename}")
+    return None
 
 
 def _preprocess_scan(ds: xr.Dataset, azimuth_step: float) -> xr.Dataset:
@@ -30,61 +48,56 @@ def _preprocess_scan(ds: xr.Dataset, azimuth_step: float) -> xr.Dataset:
     """
     # Ensure 'sweep_fixed_angle' exists for elevation dimension
     if 'sweep_fixed_angle' not in ds.coords and 'sweep_fixed_angle' not in ds.data_vars:
-        logger.error("Variable 'sweep_fixed_angle' not found in dataset. Cannot set elevation dimension.")
-        raise ValueError("Missing 'sweep_fixed_angle' in input dataset")  # Or handle more gracefully
+        logger.error("Variable 'sweep_fixed_angle' not found. Cannot set elevation dimension.")
+        raise ValueError("Missing 'sweep_fixed_angle'")
 
     # 1. Reindex Azimuth
     azimuth_angles = np.arange(0, 360, azimuth_step)
-    try:
-        # Check if azimuth dimension exists and is multi-dimensional before reindexing
-        if 'azimuth' in ds.dims and ds['azimuth'].ndim > 0:
-            ds = ds.reindex(azimuth=azimuth_angles, method="nearest", tolerance=azimuth_step)  # Added tolerance
-        else:
-            logger.warning("Azimuth dimension not found or is scalar, skipping reindexing.")
-    except ValueError as e:
-        logger.warning(f"Could not reindex azimuth: {e}. Skipping azimuth reindexing.")
+    if 'azimuth' in ds.dims and ds['azimuth'].ndim > 0:
+        try:
+            ds = ds.reindex(azimuth=azimuth_angles, method="nearest", tolerance=azimuth_step)
+        except ValueError as e:
+            logger.warning(f"Could not reindex azimuth: {e}. Skipping.")
+    else:
+        logger.warning("Azimuth dimension not found or is scalar, skipping reindexing.")
 
     # 2. Standardize Time Dimension
     if 'time' in ds.coords or 'time' in ds.data_vars:
         try:
-            scan_time = ds['time'].values
-            first_time_val = np.atleast_1d(scan_time)[0]
-            if np.isnat(first_time_val):
-                time_minute_floor = np.datetime64(datetime.now().replace(second=0, microsecond=0))
-            elif isinstance(first_time_val, np.datetime64):
-                time_minute_floor = first_time_val.astype('datetime64[m]')
+            scan_time_val = np.atleast_1d(ds['time'].values)[0]
+            if np.isnat(scan_time_val):
+                py_dt = datetime.now(timezone.utc)
             else:
-                dt_obj = datetime.utcfromtimestamp(first_time_val.item())
-                time_minute_floor = np.datetime64(dt_obj.replace(second=0, microsecond=0))
+                py_dt = pd.to_datetime(scan_time_val).to_pydatetime()
+
+            time_minute_floor_utc = (py_dt.replace(tzinfo=timezone.utc) if py_dt.tzinfo is None \
+                                         else py_dt.astimezone(timezone.utc)).replace(second=0, microsecond=0)
+
+            np_time_minute_floor = np.datetime64(time_minute_floor_utc)
 
             if 'time' in ds.coords: ds = ds.drop_vars("time", errors='ignore')
             if 'time' in ds.data_vars: ds = ds.drop_vars("time", errors='ignore')
-
-            ds = ds.expand_dims({"time": [time_minute_floor]})
+            ds = ds.expand_dims({"time": [np_time_minute_floor]})
             ds = ds.set_coords("time")
         except Exception as e:
-            logger.error(f"Error processing time dimension: {e}. Time dimension might be incorrect.")
-            time_minute_floor = np.datetime64(datetime.now().replace(second=0, microsecond=0))
-            ds = ds.expand_dims({"time": [time_minute_floor]})
-            ds = ds.set_coords("time")
+            logger.error(f"Error processing time dimension: {e}. Using current time fallback.")
+            np_time_fallback = np.datetime64(datetime.now(timezone.utc).replace(second=0, microsecond=0))
+            ds = ds.expand_dims({"time": [np_time_fallback]}).set_coords("time")
     else:
-        logger.warning("Time coordinate/variable not found. Adding current time as fallback.")
-        time_minute_floor = np.datetime64(datetime.now().replace(second=0, microsecond=0))
-        ds = ds.expand_dims({"time": [time_minute_floor]})
-        ds = ds.set_coords("time")
+        logger.warning("Time coordinate not found. Adding current time fallback.")
+        np_time_fallback = np.datetime64(datetime.now(timezone.utc).replace(second=0, microsecond=0))
+        ds = ds.expand_dims({"time": [np_time_fallback]}).set_coords("time")
 
     # 3. Standardize Elevation Dimension
     try:
         elevation_val = np.atleast_1d(ds['sweep_fixed_angle'].values)[0]
         if 'elevation' in ds.coords: ds = ds.drop_vars("elevation", errors='ignore')
         if 'elevation' in ds.data_vars: ds = ds.drop_vars("elevation", errors='ignore')
-        ds = ds.expand_dims({"elevation": [elevation_val]})
+        ds = ds.expand_dims({"elevation": [float(elevation_val)]})  # Ensure float
         ds = ds.set_coords("elevation")
     except Exception as e:
-        logger.error(f"Error processing elevation dimension: {e}. Elevation dimension might be incorrect.")
-        ds = ds.expand_dims({"elevation": [0.0]})
-        ds = ds.set_coords("elevation")
-
+        logger.error(f"Error processing elevation: {e}. Using 0.0 fallback.")
+        ds = ds.expand_dims({"elevation": [0.0]}).set_coords("elevation")
     return ds
 
 
@@ -103,67 +116,76 @@ def read_scan(filepath: str, variables: Optional[List[str]] = None) -> Optional[
     if not os.path.exists(filepath):
         logger.error(f"File not found: {filepath}")
         return None
-
     azimuth_step = get_setting('radar.azimuth_step', default=0.5)
     ds_raw = None
     try:
         ds_raw = xr.open_dataset(filepath, engine="furuno")
-        ds_processed = _preprocess_scan(ds_raw, azimuth_step)
-
+        ds_processed = _preprocess_scan(ds_raw.copy(),
+                                        azimuth_step)  # Pass a copy to avoid modifying ds_raw if it's used later in finally
         if variables:
             essential_coords = ['time', 'elevation', 'range', 'azimuth', 'latitude', 'longitude', 'x', 'y']
             vars_to_keep = list(set(variables + [coord for coord in essential_coords if coord in ds_processed]))
-            available_vars = [v for v in vars_to_keep if v in ds_processed.variables]
-
-            if not any(v in available_vars for v in variables if v in ds_processed.data_vars):
-                logger.error(f"None of the requested data variables {variables} are available in {filepath}")
+            available_vars = [v for v in vars_to_keep if v in ds_processed]
+            if not any(v in available_vars for v in variables if v in ds_processed.data_vars):  # Check actual data vars
+                logger.error(f"None of requested data variables {variables} available in {filepath} after processing.")
                 ds_processed.close()
                 return None
-
             ds_final = ds_processed[available_vars]
         else:
             ds_final = ds_processed
-
         logger.info(f"Successfully read and preprocessed scan: {filepath}")
         return ds_final
-
     except Exception as e:
-        logger.error(f"Failed to read or preprocess file {filepath}: {e}", exc_info=True)
+        logger.error(f"Failed to read/preprocess {filepath}: {e}", exc_info=True)
+        if ds_processed is not None and ds_final is not ds_processed: ds_processed.close()  # type: ignore
         return None
     finally:
-        if ds_raw is not None:
-            try:
-                ds_raw.close()
-            except Exception as close_err:
-                logger.warning(f"Error closing raw dataset for {filepath}: {close_err}")
+        if ds_raw is not None: ds_raw.close()
 
 
-def get_scan_elevation(scan_filepath: str) -> Optional[float]:
+def extract_scan_key_metadata(scan_filepath: str) -> Optional[Tuple[datetime, float, int]]:
     """
-    Reads a scan file briefly to extract its elevation.
-
-    Args:
-        scan_filepath: Path to the radar scan file.
+    Reads a scan file to extract its precise internal timestamp (UTC),
+    elevation, and scan sequence number (_N from filename).
 
     Returns:
-        The elevation angle as a float, or None if extraction fails.
+        Tuple (precise_timestamp_utc, elevation, sequence_number) or None if extraction fails.
     """
     ds = None
     try:
-        # Read minimal data - 'read_scan' handles preprocessing including setting 'elevation'
-        ds = read_scan(scan_filepath, variables=None)  # Read metadata & coords
-        if ds is not None and 'elevation' in ds.coords:
+        filename = os.path.basename(scan_filepath)
+        sequence_number = _parse_scan_sequence_number(filename)
+        if sequence_number is None:
+            logger.warning(
+                f"Could not parse sequence number from filename: {filename}. Cannot include in scan log accurately.")
+            # Decide if this is fatal. For now, let's allow proceeding without seq num if we must.
+            # Or return None here to enforce sequence number presence:
+            # return None
+            # For now, we'll make it required for robust volume grouping.
+            if sequence_number is None:  # Re-check, explicit for clarity
+                logger.error(f"Sequence number is required. Could not parse from {filename}.")
+                return None
+
+        # Use read_scan with variables=None to get coordinates including time and elevation.
+        ds = read_scan(scan_filepath, variables=None)
+        if ds is not None and 'time' in ds.coords and 'elevation' in ds.coords:
+            time_val_np64 = ds['time'].values.item()
+            py_dt = pd.to_datetime(time_val_np64).to_pydatetime()
+            precise_ts_utc = py_dt.replace(tzinfo=timezone.utc) if py_dt.tzinfo is None \
+                else py_dt.astimezone(timezone.utc)
+
             elevation = float(ds['elevation'].item())
-            logger.debug(f"Extracted elevation {elevation:.2f} from {scan_filepath}")
-            return elevation
+
+            logger.debug(
+                f"Extracted from {scan_filepath}: PreciseTS={precise_ts_utc.isoformat()}, Elev={elevation:.2f}, SeqNum={sequence_number}")
+            return precise_ts_utc, elevation, sequence_number
         elif ds is not None:
-            logger.warning(f"Elevation coordinate not found after reading scan: {scan_filepath}")
+            logger.warning(f"Precise time or elevation coordinate not found after reading scan: {scan_filepath}")
             return None
-        else:
-            # read_scan failed, error already logged by it
+        else:  # read_scan failed
             return None
     except Exception as e:
-        logger.error(f"Failed to read or get elevation from scan {scan_filepath}: {e}", exc_info=True)
+        logger.error(f"Failed to read or get precise data from scan {scan_filepath}: {e}", exc_info=True)
         return None
     finally:
         if ds is not None:
@@ -172,111 +194,7 @@ def get_scan_elevation(scan_filepath: str) -> Optional[float]:
             except Exception:
                 pass
 
-
-def get_filepaths_in_range(
-        base_dir: str,
-        start_dt: datetime,
-        end_dt: datetime,
-        elevation_filter: Optional[float] = None
-) -> List[Tuple[str, datetime]]:
-    """
-    Finds radar scan file paths within a specified base directory (containing
-    {ElevationCode}/{YYYYMMDD} subfolders) that fall within the given datetime range
-    and optionally match the elevation filter.
-
-    Args:
-        base_dir: The root directory for processed scans.
-        start_dt: The start datetime for the search range (inclusive).
-        end_dt: The end datetime for the search range (inclusive).
-        elevation_filter: Optional specific elevation angle to search for.
-
-    Returns:
-        A sorted list of tuples, where each tuple contains (filepath, file_datetime).
-        Returns an empty list if base_dir doesn't exist or no files are found.
-    """
-    if not os.path.isdir(base_dir):
-        logger.warning(f"Base directory for searching files not found: {base_dir}")
-        return []
-
-    start_date = start_dt.date()
-    end_date = end_dt.date()
-    matching_files: List[Tuple[str, datetime]] = []
-    elevation_codes_to_scan: List[str] = []
-
-    logger.info(f"Searching for files in {base_dir} between {start_dt} and {end_dt}")
-
-    if elevation_filter is not None:
-        logger.info(f"Filtering for elevation: {elevation_filter:.2f}°")
-        elevation_codes_to_scan.append(f"{int(round(elevation_filter * 100)):03d}")
-    else:
-        logger.info("Scanning all elevations.")
-        try:
-            elevation_codes_to_scan = [
-                d for d in os.listdir(base_dir)
-                if os.path.isdir(os.path.join(base_dir, d)) and d.isdigit()
-            ]
-        except Exception as e:
-            logger.error(f"Error listing elevation directories in {base_dir}: {e}")
-            return []
-        if not elevation_codes_to_scan:
-            logger.warning(
-                f"No potential elevation code directories found in {base_dir}. Checking for old 'YYYYMMDD' structure...")
-            # --- Fallback to Old Structure (Optional & Temporary) ---
-            # You might remove this fallback after migration is complete.
-            try:
-                for dir_name in os.listdir(base_dir):
-                    dir_path = os.path.join(base_dir, dir_name)
-                    current_dir_date = parse_date_from_dirname(dir_name)
-                    if os.path.isdir(dir_path) and current_dir_date:
-                        if start_date <= current_dir_date <= end_date:
-                            logger.debug(f"Scanning OLD structure directory: {dir_path}")
-                            for filename in os.listdir(dir_path):
-                                if filename.endswith(".scnx.gz"):
-                                    filepath = os.path.join(dir_path, filename)
-                                    file_dt = parse_datetime_from_filename(filename)
-                                    if file_dt and start_dt <= file_dt <= end_dt:
-                                        # If filtering by elevation, we must check it here
-                                        if elevation_filter is not None:
-                                            scan_elev = get_scan_elevation(filepath)
-                                            if scan_elev is not None and abs(scan_elev - elevation_filter) < 0.1:
-                                                matching_files.append((filepath, file_dt))
-                                        else:  # No elevation filter, add it
-                                            matching_files.append((filepath, file_dt))
-                if matching_files:
-                    logger.warning("Found files in OLD YYYYMMDD structure. Consider running 'radproc reorg-scans'.")
-                    matching_files.sort(key=lambda x: x[1])
-                    return matching_files
-                else:
-                    return []  # Nothing found in old or new structure
-            except Exception as e:
-                logger.error(f"Error scanning for old structure: {e}")
-                return []
-            # --- End Fallback ---
-
-    logger.debug(f"Will scan elevation codes: {elevation_codes_to_scan}")
-
-    try:
-        for elev_code in elevation_codes_to_scan:
-            elev_dir_path = os.path.join(base_dir, elev_code)
-            if not os.path.isdir(elev_dir_path):
-                continue
-
-            for date_dir_name in os.listdir(elev_dir_path):
-                date_dir_path = os.path.join(elev_dir_path, date_dir_name)
-                if os.path.isdir(date_dir_path):
-                    current_dir_date = parse_date_from_dirname(date_dir_name)
-                    if current_dir_date and start_date <= current_dir_date <= end_date:
-                        logger.debug(f"Scanning directory: {date_dir_path}")
-                        for filename in os.listdir(date_dir_path):
-                            if filename.endswith(".scnx.gz"):
-                                filepath = os.path.join(date_dir_path, filename)
-                                file_dt = parse_datetime_from_filename(filename)
-                                if file_dt and start_dt <= file_dt <= end_dt:
-                                    matching_files.append((filepath, file_dt))
-    except Exception as e:
-        logger.error(f"Error scanning directories in {base_dir}: {e}", exc_info=True)
-        return []
-
-    matching_files.sort(key=lambda x: x[1])
-    logger.info(f"Found {len(matching_files)} files in range.")
-    return matching_files
+# DEPRECATE get_filepaths_in_range:
+# def get_filepaths_in_range(...)
+# This function's role is now primarily handled by querying radproc_scan_log
+# via db_manager.query_scan_log_for_timeseries_processing()
