@@ -15,7 +15,8 @@ from PIL import Image, UnidentifiedImageError
 import xarray as xr
 from ..config import get_setting
 from ..utils.helpers import parse_datetime_from_filename
-from ..data import read_scan, get_filepaths_in_range # Use get_filepaths for scans if needed
+from ..data import read_scan
+from ..db_manager import get_connection, release_connection, query_scan_log_for_timeseries_processing
 from ..utils.geo import georeference_dataset
 from ..utils.helpers import parse_datetime_from_image_filename
 from .plotter import create_ppi_image
@@ -169,113 +170,111 @@ def _get_scan_elevation(scan_filepath: str) -> Optional[float]:
     finally:
         if ds is not None:
             try: ds.close()
-            except Exception: pass 
-             
+            except Exception: pass
+
+
 def create_animation(
-    variable: str,
-    elevation: float,
-    start_dt: datetime,
-    end_dt: datetime,
-    output_filename: str,
-    plot_extent: Optional[Tuple[float, float, float, float]] = None,
-    include_watermark: bool = True,
-    fps: Optional[int] = None,
+        variable: str,
+        elevation: float,  # This is the target_elevation for scans
+        start_dt: datetime,
+        end_dt: datetime,
+        output_filename: str,
+        plot_extent: Optional[Tuple[float, float, float, float]] = None,
+        include_watermark: bool = True,
+        fps: Optional[int] = None,
 ) -> bool:
-    """
-    Creates an animation by finding relevant scan files, checking elevation,
-    and using existing valid images or regenerating frames as needed.
-
-    Args:
-        # ... (arguments remain the same) ...
-
-    Returns:
-        True on success, False on failure.
-    """
-    logger.info(f"--- Starting Animation Creation (Scan-Driven) ---")
+    logger.info(f"--- Starting Animation Creation (Scan-Log Driven) ---")
     logger.info(f"Variable: {variable}, Target Elev: {elevation:.1f}, Range: {start_dt} -> {end_dt}")
     logger.info(f"Output File: {output_filename}")
 
-    # --- a. Setup & Configuration ---
     images_base_dir = get_setting('app.images_dir')
-    processed_scan_dir = get_setting('app.output_dir')
+    # processed_scan_dir is no longer directly used to find scans, DB will provide paths
     default_tmp_dir_base = get_setting('app.animation_tmp_dir', 'cache/animation_tmp')
     default_fps = get_setting('app.animation_fps', 5)
-
     final_fps = fps if fps is not None else default_fps
-    file_format = os.path.splitext(output_filename)[1].lower()
-    elevation_tolerance = 0.1 # Tolerance for matching elevation
+    elevation_tolerance = get_setting('volume_grouping.elevation_tolerance', 0.1)  # Use a consistent tolerance
 
     if not images_base_dir:
         logger.error("Animation failed: 'app.images_dir' is not configured.")
         return False
-    if not processed_scan_dir:
-        logger.error("Animation failed: 'app.output_dir' (processed scan directory) is not configured.")
-        return False
 
-    # Validate target elevation
     try:
-        target_elevation = float(elevation)
-        elevation_code = f"{int(target_elevation * 100):03d}"
+        target_elevation_for_query = float(elevation)  # Use this for DB query
+        elevation_code_for_image_path = f"{int(round(target_elevation_for_query * 100)):03d}"
     except (ValueError, TypeError):
         logger.error(f"Invalid target elevation value provided: {elevation}")
         return False
 
     plot_style = get_plot_style(variable)
-    if plot_style is None: return False # Error logged by getter
+    if plot_style is None: return False
 
-    # Determine if regeneration is required FOR ALL frames
     config_watermark_path = get_setting('app.watermark_path')
     regen_needed_globally = (plot_extent is not None) or \
                             (not include_watermark and config_watermark_path and os.path.exists(config_watermark_path))
     if regen_needed_globally:
         logger.info("Global frame regeneration required (custom extent or no watermark requested).")
 
-    # --- b. Find Scan Files ---
-    logger.info(f"Finding scan files in range {start_dt} -> {end_dt}...")
-    scan_filepaths_tuples = get_filepaths_in_range(processed_scan_dir, start_dt, end_dt)
-    if not scan_filepaths_tuples:
-        logger.error("No scan files found in the specified time range and directory.")
-        return False
-    logger.info(f"Found {len(scan_filepaths_tuples)} potential scan files.")
+    # --- b. Find Scan Files VIA DATABASE ---
+    conn = None
+    scan_log_entries: List[Tuple[str, datetime, int]] = []  # (filepath, precise_timestamp, scan_log_id)
+    try:
+        conn = get_connection()
+        logger.info(
+            f"Querying scan log for animation frames: Elev~{target_elevation_for_query:.2f}, Range: {start_dt} to {end_dt}")
+        scan_log_entries = query_scan_log_for_timeseries_processing(
+            conn,
+            target_elevation=target_elevation_for_query,
+            start_dt=start_dt,
+            end_dt=end_dt,
+            elevation_tolerance=elevation_tolerance
+        )
+    except Exception as db_err:
+        logger.error(f"Database error querying scans for animation: {db_err}", exc_info=True)
+        return False  # Cannot proceed without scan list
+    finally:
+        if conn:
+            release_connection(conn)
 
-    # --- c. Prepare Frame List (Iterate Scans, Check Elev, Validate/Regenerate Image) ---
+    if not scan_log_entries:
+        logger.error("No scan files found in the database log for the specified criteria.")
+        return False
+    logger.info(f"Found {len(scan_log_entries)} scan log entries for animation.")
+    # scan_log_entries is already sorted by precise_timestamp from the DB query
+
+    # --- c. Prepare Frame List ---
     frame_paths_for_anim = []
-    temp_dir_path = None # Path to the temporary directory created, if needed
+    temp_dir_path = None
     processed_scan_count = 0
 
     try:
-        # Create temp dir only if regeneration might be needed
-        if regen_needed_globally:
+        if regen_needed_globally:  # Create temp dir only if needed
             base_tmp = os.path.join(os.getcwd(), default_tmp_dir_base)
             os.makedirs(base_tmp, exist_ok=True)
             temp_dir_path = tempfile.mkdtemp(prefix="radproc_anim_", dir=base_tmp)
             logger.info(f"Created temporary directory for regenerated frames: {temp_dir_path}")
 
-        logger.info("Processing scans: Checking elevation and preparing frames...")
-        for idx, (scan_path, scan_dt) in enumerate(scan_filepaths_tuples):
+        logger.info("Processing scan log entries: Checking elevation and preparing frames...")
+        # scan_log_entries contains (filepath, precise_timestamp, scan_log_id)
+        for idx, (scan_path, scan_dt_precise, _scan_log_id) in enumerate(scan_log_entries):
             processed_scan_count += 1
-            logger.debug(f"Processing scan {idx+1}/{len(scan_filepaths_tuples)}: {scan_path}")
+            logger.debug(f"Processing scan log entry {idx + 1}/{len(scan_log_entries)}: {scan_path}")
 
-            # 1. Check Scan Elevation
-            scan_elevation = _get_scan_elevation(scan_path)
-            if scan_elevation is None:
-                logger.warning(f"Skipping scan: Could not get elevation from {scan_path}")
-                continue
-            if abs(scan_elevation - target_elevation) > elevation_tolerance:
-                logger.debug(f"Skipping scan: Elevation {scan_elevation:.1f} doesn't match target {target_elevation:.1f}")
-                continue
-
-            # Elevation matches, proceed...
-            logger.debug(f"Scan elevation {scan_elevation:.1f} matches target.")
+            # Elevation check already done by DB query with tolerance.
+            # We still need scan_elevation from file if we were to re-check,
+            # but query_scan_log_for_timeseries_processing handles this.
+            # The 'elevation' parameter of this function is the *target* elevation.
 
             # 2. Determine Expected Image Path
-            # Use the parsed datetime from the *scan* filename, floored to the minute
-            # This assumes image filenames correspond to the floored minute time dim
-            scan_dt_minute_floor = scan_dt.replace(second=0, microsecond=0)
-            date_str = scan_dt_minute_floor.strftime("%Y%m%d")
-            datetime_file_str = scan_dt_minute_floor.strftime("%Y%m%d_%H%M")
-            expected_image_filename = f"{variable}_{elevation_code}_{datetime_file_str}.png"
-            expected_image_path = os.path.join(images_base_dir, variable, date_str, elevation_code, expected_image_filename)
+            # Image filenames use floored minute for time and specific elevation code.
+            # scan_dt_precise is the exact timestamp from the scan.
+            scan_dt_minute_floor = scan_dt_precise.replace(second=0, microsecond=0)
+            date_str_for_path = scan_dt_minute_floor.strftime("%Y%m%d")  # For directory structure
+            datetime_file_str = scan_dt_minute_floor.strftime("%Y%m%d_%H%M")  # For filename
+
+            # Use elevation_code_for_image_path calculated from the target elevation.
+            expected_image_filename = f"{variable}_{elevation_code_for_image_path}_{datetime_file_str}.png"
+            expected_image_path = os.path.join(images_base_dir, variable, date_str_for_path,
+                                               elevation_code_for_image_path, expected_image_filename)
 
             # 3. Decide: Use Existing or Regenerate?
             use_existing_image = False
@@ -288,23 +287,24 @@ def create_animation(
                     else:
                         logger.warning(f"Existing image is invalid, will attempt regeneration: {expected_image_path}")
                 else:
-                    logger.info(f"Image not found, attempting regeneration: {expected_image_path}")
+                    logger.info(
+                        f"Image not found at {expected_image_path}, attempting regeneration from scan {scan_path}")
 
             # 4. Regenerate if needed
             if not use_existing_image:
-                # Ensure temp dir exists if we haven't created it yet (e.g., first regen)
-                if temp_dir_path is None:
-                     base_tmp = os.path.join(os.getcwd(), default_tmp_dir_base)
-                     os.makedirs(base_tmp, exist_ok=True)
-                     temp_dir_path = tempfile.mkdtemp(prefix="radproc_anim_", dir=base_tmp)
-                     logger.info(f"Created temporary directory (first regeneration): {temp_dir_path}")
+                if temp_dir_path is None:  # Create temp dir if not already created
+                    base_tmp = os.path.join(os.getcwd(), default_tmp_dir_base)
+                    os.makedirs(base_tmp, exist_ok=True)
+                    temp_dir_path = tempfile.mkdtemp(prefix="radproc_anim_", dir=base_tmp)
+                    logger.info(f"Created temporary directory (first regeneration): {temp_dir_path}")
 
+                # _regenerate_frame uses the actual scan_path from the DB log
                 regenerated_path = _regenerate_frame(
                     scan_filepath=scan_path,
                     variable=variable,
                     plot_style=plot_style,
                     output_dir=temp_dir_path,
-                    frame_idx=idx, # Use original scan index for frame naming
+                    frame_idx=idx,
                     plot_extent=plot_extent,
                     include_watermark=include_watermark
                 )
@@ -312,7 +312,6 @@ def create_animation(
                     frame_paths_for_anim.append(regenerated_path)
                 else:
                     logger.warning(f"Skipping frame: Failed regeneration for scan {scan_path}")
-                    # Continue processing other scans
 
         # --- d. Create Animation ---
         if not frame_paths_for_anim:
@@ -320,39 +319,53 @@ def create_animation(
             return False
 
         logger.info(f"Assembling animation with {len(frame_paths_for_anim)} frames...")
+        # ... (rest of animation creation logic with imageio remains the same) ...
         try:
-            # Ensure output directory exists
-            output_dir = os.path.dirname(output_filename)
-            if output_dir: os.makedirs(output_dir, exist_ok=True)
+            output_dir_for_anim = os.path.dirname(output_filename)
+            if output_dir_for_anim: os.makedirs(output_dir_for_anim, exist_ok=True)
 
-            kwargs = {'fps': final_fps}
-            plugin = None
-            if file_format == '.mp4':
-                #plugin = 'ffmpeg' # imageio v3 uses plugin argument
-                kwargs['codec'] = 'libx264'
-                kwargs['pixelformat'] = 'yuv420p'
-            elif file_format == '.gif':
-                #plugin = 'pillow' # imageio v3 uses plugin argument
-                kwargs['loop'] = 0
-                kwargs['palettesize'] = 256
-                kwargs['duration'] = 1000 / final_fps # Duration per frame in ms for GIF
+            kwargs_anim = {'fps': final_fps}
+            anim_plugin = None  # imageio v3 often infers unless specific needed
+            file_format_anim = os.path.splitext(output_filename)[1].lower()
 
-            # Use imageio v3 API
+            if file_format_anim == '.mp4':
+                # anim_plugin = 'ffmpeg' # Only if auto-detection fails
+                kwargs_anim['codec'] = 'libx264'
+                kwargs_anim['pixelformat'] = 'yuv420p'
+            elif file_format_anim == '.gif':
+                # anim_plugin = 'pillow' # Only if auto-detection fails
+                kwargs_anim['loop'] = 0  # Loop indefinitely for GIF
+                # duration is inverse of fps for GIF if Pillow plugin is used.
+                # imageio v3's default GIF writer might handle fps directly.
+                # If using Pillow plugin: kwargs_anim['duration'] = 1000 / final_fps (ms per frame)
+
+            frames_data = []
+            for p in frame_paths_for_anim:
+                try:
+                    frames_data.append(iio.imread(p))
+                except Exception as read_img_err:
+                    logger.warning(f"Could not read frame {p} for animation: {read_img_err}. Skipping this frame.")
+                    continue  # Skip problematic frame
+
+            if not frames_data:
+                logger.error("No frames could be read for animation after attempting to load them.")
+                return False
+
             iio.imwrite(
                 output_filename,
-                [iio.imread(p) for p in frame_paths_for_anim], # Read images as needed
-                plugin=plugin,
-                **kwargs
-                )
-
+                frames_data,
+                plugin=anim_plugin,  # Often None is fine
+                **kwargs_anim
+            )
             logger.info(f"Animation successfully created: {output_filename}")
-            return True # Success
+            return True
 
-        # ... (keep existing except block for imageio/ImportError/Exception) ...
         except ImportError as ie:
-             logger.error(f"Failed to create animation: Missing imageio plugin or library. Format: {file_format}. Error: {ie}")
-             logger.error("For MP4 support, ensure 'imageio-ffmpeg' is installed: pip install imageio-ffmpeg")
-             return False
+            logger.error(
+                f"Failed to create animation: Missing imageio plugin or library for format {file_format_anim}. Error: {ie}")
+            if file_format_anim == '.mp4':
+                logger.error("For MP4 support, ensure 'imageio-ffmpeg' is installed: pip install imageio-ffmpeg")
+            return False
         except Exception as anim_err:
             logger.error(f"Failed to create animation: {anim_err}", exc_info=True)
             return False
