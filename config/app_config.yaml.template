@@ -32,5 +32,8 @@ animation_default_format: ".gif"          # Default output format (e.g., .gif, .
 animation_tmp_dir: "cache/animation_tmp"  # Default temporary storage for regenerated frames during animation creation
 animation_output_dir: "animations"        # Default relative path for saving animations
 
+# --- Scan log Settings
+max_inter_scan_gap_minutes: 1
+
 # --- API tmp output dir ---
 api_job_output_dir: cache/api_job_outputs/ # Relative to project root usually

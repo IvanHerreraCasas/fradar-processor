@@ -486,7 +486,7 @@ def cli_group_volumes(args: argparse.Namespace):
 
     # Configuration for grouping logic
     # Max time allowed BETWEEN two sequential scans in the same volume (e.g., _000 -> _001)
-    MAX_INTER_SCAN_GAP = timedelta(minutes=get_setting('volume_grouping.max_inter_scan_gap_minutes', 1))
+    MAX_INTER_SCAN_GAP = timedelta(minutes=get_setting('app.max_inter_scan_gap_minutes', 1))
     # Max window to search BACKWARDS for a predecessor scan. Should be comfortably larger than MAX_INTER_SCAN_GAP.
     PREDECESSOR_SEARCH_WINDOW_SECONDS = int(
         (MAX_INTER_SCAN_GAP.total_seconds()) * 2.5)
