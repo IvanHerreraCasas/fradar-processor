@@ -8,7 +8,7 @@ import pandas as pd
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras  # For execute_values, DictCursor
-from datetime import datetime, timezone  # Ensure timezone is imported
+from datetime import datetime, timezone, timedelta  # Ensure timezone is imported
 
 from .config import get_setting
 
@@ -386,7 +386,7 @@ def get_ungrouped_scans_for_volume_assignment(conn,
         # Look back to avoid processing very old ungrouped scans indefinitely
         time_cutoff = datetime.now(timezone.utc) - pd.Timedelta(hours=lookback_hours)
         sql = """
-              SELECT scan_log_id, filepath, precise_timestamp, elevation, scan_sequence_number
+              SELECT scan_log_id, filepath, precise_timestamp, elevation, scan_sequence_number, nominal_filename_timestamp
               FROM radproc_scan_log
               WHERE volume_identifier IS NULL \
                 AND precise_timestamp >= %s
@@ -425,6 +425,70 @@ def update_volume_identifier_for_scans(conn, scan_log_ids: List[int], volume_ide
     finally:
         if cur: cur.close()
 
+
+def find_latest_scan_for_sequence(conn,
+                                  target_sequence_number: int,
+                                  before_timestamp: datetime,
+                                  time_window_seconds: int,
+                                  for_volume_id_timestamp: Optional[datetime] = None
+                                  ) -> Optional[Dict[str, Any]]:
+    """
+    Finds the latest scan entry for a specific sequence_number that occurred
+    within a given time window before a reference timestamp.
+    Optionally, can try to match based on a known volume_identifier (timestamp of _000 scan)
+    if provided, to ensure predecessor belongs to the same tentative volume start.
+    """
+    cur = None
+    logger.debug(
+        f"Searching for predecessor seq {target_sequence_number} before {before_timestamp.isoformat()} within {time_window_seconds}s window.")
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        start_search_ts = before_timestamp - timedelta(seconds=time_window_seconds)
+
+        params = [target_sequence_number, start_search_ts, before_timestamp]
+
+        # Base SQL query
+        sql = """
+              SELECT scan_log_id, \
+                     precise_timestamp, \
+                     nominal_filename_timestamp, \
+                     volume_identifier, \
+                     scan_sequence_number, \
+                     elevation
+              FROM radproc_scan_log
+              WHERE scan_sequence_number = %s
+                AND precise_timestamp >= %s
+                AND precise_timestamp < %s \
+              """
+        # If we have a candidate volume_id_timestamp (from the current _000 scan being processed),
+        # we prefer a predecessor that matches this. If not, we take any.
+        # This is more relevant if multiple _000 scans are very close in time.
+        # For simpler logic, we might not need for_volume_id_timestamp initially,
+        # as the tight MAX_INTER_SCAN_GAP should prevent jumping far.
+        # However, if used:
+        if for_volume_id_timestamp:
+            sql += " AND (volume_identifier = %s OR volume_identifier IS NULL) "  # Allow predecessor to be already part of this forming volume or not yet grouped
+            params.append(for_volume_id_timestamp)
+            sql += " ORDER BY precise_timestamp DESC, CASE WHEN volume_identifier = %s THEN 0 ELSE 1 END"  # Prefer already matched volume ID
+            params.append(for_volume_id_timestamp)
+        else:
+            sql += " ORDER BY precise_timestamp DESC"
+
+        sql += " LIMIT 1;"
+
+        cur.execute(sql, tuple(params))
+        row = cur.fetchone()
+        if row:
+            logger.debug(f"Found potential predecessor: {dict(row)}")
+        else:
+            logger.debug(
+                f"No predecessor found for seq {target_sequence_number} before {before_timestamp.isoformat()}.")
+        return dict(row) if row else None
+    except psycopg2.Error as e:
+        logger.error(f"DB error finding latest scan for seq {target_sequence_number}: {e}", exc_info=True)
+        return None
+    finally:
+        if cur: cur.close()
 
 # find_potential_volume_members might be better implemented in the CLI command logic itself,
 # by querying ungrouped scans and then applying Python logic to group them based on

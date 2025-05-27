@@ -32,7 +32,7 @@ from ..core.utils.upload_queue import start_worker, stop_worker
 # --- NEW Imports for index-scans ---
 from ..core.data import extract_scan_key_metadata
 from ..core.utils.helpers import parse_datetime_from_filename, move_processed_file
-from ..core.db_manager import get_connection, release_connection, add_scan_to_log, get_ungrouped_scans_for_volume_assignment,update_volume_identifier_for_scans, get_potential_volume_members_by_time_and_seq
+from ..core.db_manager import get_connection, release_connection, add_scan_to_log, get_ungrouped_scans_for_volume_assignment, update_volume_identifier_for_scans, find_latest_scan_for_sequence
 
 try:
     from tqdm import tqdm
@@ -382,8 +382,6 @@ def cli_reorg_scans(args: argparse.Namespace):
         logger.info(f"Old YYYYMMDD directories deleted: {deleted_dir_count}")
     logger.info("Scan file reorganization finished.")
 
-
-
 # +++ CLI Handler for index-scans +++
 def cli_index_scans(args: argparse.Namespace):
     """Handler for the 'index-scans' command."""
@@ -477,36 +475,37 @@ def cli_index_scans(args: argparse.Namespace):
 
 
 def cli_group_volumes(args: argparse.Namespace):
-    """Handler for the 'group-volumes' command."""
     logger = logging.getLogger(__name__)
-    logger.info("=== Starting Volume Grouping ===")
+    logger.info("=== Starting Volume Grouping (Scan-by-Scan Sequential Linking Logic) ===")
     if args.dry_run:
         logger.info("DRY RUN active: No changes will be made to the database.")
 
     conn = None
-    grouped_volumes_count = 0
-    scans_assigned_to_volume = 0
+    scans_volume_id_assigned_count = 0
     error_count = 0
 
-    # Default config values (can be overridden by config file later if desired)
-    default_time_window_minutes = get_setting('volume_grouping.time_window_minutes', 5)
-    default_min_scans_in_volume = get_setting('volume_grouping.min_scans_in_volume', 2)
-    default_elevation_tolerance_for_volume = get_setting('volume_grouping.elevation_tolerance', 0.1)
+    # Configuration for grouping logic
+    # Max time allowed BETWEEN two sequential scans in the same volume (e.g., _000 -> _001)
+    MAX_INTER_SCAN_GAP = timedelta(minutes=get_setting('volume_grouping.max_inter_scan_gap_minutes', 1))
+    # Max window to search BACKWARDS for a predecessor scan. Should be comfortably larger than MAX_INTER_SCAN_GAP.
+    PREDECESSOR_SEARCH_WINDOW_SECONDS = int(
+        (MAX_INTER_SCAN_GAP.total_seconds()) * 2.5)  # e.g., 2.5 * 3 minutes = 450 seconds (7.5 minutes)
 
-    time_window = timedelta(minutes=args.time_window_minutes or default_time_window_minutes)
-    min_scans = args.min_scans_in_volume or default_min_scans_in_volume
-    elevation_tolerance = default_elevation_tolerance_for_volume  # Not making CLI arg for now for simplicity
+    lookback_hours = args.lookback_hours
+    limit = args.limit
 
-    logger.info(
-        f"Parameters: Lookback={args.lookback_hours}h, Limit={args.limit}, TimeWindow={time_window}, MinScans={min_scans}")
+    logger.info(f"Parameters: Lookback={lookback_hours}h, Limit={limit}, MaxInterScanGap={MAX_INTER_SCAN_GAP}")
 
     try:
         conn = get_connection()
         logger.info("Database connection established.")
 
-        # Get all ungrouped scans initially, sorted by time
-        # These are dictionaries: {'scan_log_id', 'filepath', 'precise_timestamp', 'elevation', 'scan_sequence_number'}
-        ungrouped_scans = get_ungrouped_scans_for_volume_assignment(conn, args.lookback_hours, args.limit)
+        ungrouped_scans = get_ungrouped_scans_for_volume_assignment(conn, lookback_hours, limit)
+
+        # Sort by precise_timestamp first, then sequence number for deterministic processing.
+        # This helps ensure that if _000 and _001 arrive nearly simultaneously, _000 is processed first,
+        # allowing _001 to find its grouped predecessor.
+        ungrouped_scans.sort(key=lambda x: (x['precise_timestamp'], x['scan_sequence_number']))
 
         if not ungrouped_scans:
             logger.info("No ungrouped scans found to process.")
@@ -514,90 +513,79 @@ def cli_group_volumes(args: argparse.Namespace):
 
         logger.info(f"Fetched {len(ungrouped_scans)} ungrouped scans for potential volume assignment.")
 
-        # Keep track of scans that have been assigned to a volume in this run
-        # to avoid trying to assign them again if they appear as candidates for another base scan.
-        processed_scan_ids_this_run = set()
-
-        # Sort by precise_timestamp to process chronologically
-        ungrouped_scans.sort(key=lambda x: x['precise_timestamp'])
-
         iterator_func = tqdm if TQDM_AVAILABLE else tqdm_fallback_iterator
 
-        # Iterate through potential base scans (_0 scans)
-        for base_scan_candidate in iterator_func(ungrouped_scans, desc="Processing Base Scans", unit="scan"):
-            if base_scan_candidate['scan_log_id'] in processed_scan_ids_this_run:
-                continue  # Already processed as part of another volume
+        for current_scan in iterator_func(ungrouped_scans, desc="Processing Scans for Volume ID", unit="scan"):
+            scan_log_id = current_scan['scan_log_id']
+            seq_num = current_scan['scan_sequence_number']
+            current_ts = current_scan['precise_timestamp']
+            # nominal_filename_timestamp is fetched by get_ungrouped_scans_for_volume_assignment
+            current_nominal_ts = current_scan.get('nominal_filename_timestamp')
 
-            if base_scan_candidate['scan_sequence_number'] == 0:
-                current_base_scan = base_scan_candidate
-                volume_id_ts = current_base_scan['precise_timestamp']
-                base_elevation = current_base_scan['elevation']
-                logger.debug(f"Found potential base scan _0: ID {current_base_scan['scan_log_id']} at {volume_id_ts}")
+            target_volume_id_to_assign = None
 
-                # Define search window for members
-                start_search_ts = volume_id_ts - (time_window / 2)  # Search around the base scan time
-                end_search_ts = volume_id_ts + time_window  # Allow members to be slightly after
+            if seq_num == 0:
+                # This is a base scan. It defines its own volume ID using its nominal timestamp, falling back to precise.
+                target_volume_id_to_assign = current_nominal_ts if current_nominal_ts is not None else current_ts
+                logger.debug(
+                    f"Scan {scan_log_id} (Seq 0) defines new potential volume ID: {target_volume_id_to_assign.isoformat()}")
+            else:
+                # Not a base scan (seq_num > 0). Try to find its predecessor S_{n-1}.
+                predecessor_seq_num = seq_num - 1
 
-                # Fetch potential members (ungrouped, sequence > 0, within time window and elevation tolerance)
-                # get_potential_volume_members_by_time_and_seq fetches ungrouped scans
-                potential_members_raw = get_potential_volume_members_by_time_and_seq(
+                # Search for the predecessor S_{n-1} in the DB
+                # We look for the latest S_{n-1} that occurred just before current_scan's timestamp
+                predecessor_scan_data = find_latest_scan_for_sequence(
                     conn,
-                    start_ts_range=start_search_ts,
-                    end_ts_range=end_search_ts,
-                    min_seq_num=1  # We only want sequence > 0 for members
+                    predecessor_seq_num,
+                    current_ts,
+                    PREDECESSOR_SEARCH_WINDOW_SECONDS
                 )
 
-                current_volume_scans = [current_base_scan]
+                if predecessor_scan_data:
+                    pred_ts = predecessor_scan_data['precise_timestamp']
+                    pred_vol_id = predecessor_scan_data.get('volume_identifier')  # This is the crucial part
 
-                # Filter potential_members by elevation and ensure they haven't been processed
-                for member_candidate in potential_members_raw:
-                    if member_candidate['scan_log_id'] in processed_scan_ids_this_run:
-                        continue
-                    if abs(member_candidate['elevation'] - base_elevation) <= elevation_tolerance:
-                        # Basic check: ensure member is not too far in time from base _0 scan
-                        if volume_id_ts <= member_candidate['precise_timestamp'] < (volume_id_ts + time_window):
-                            current_volume_scans.append(member_candidate)
+                    time_diff_from_pred = current_ts - pred_ts  # Should always be positive due to search window
 
-                # Sort by sequence number and check for reasonable continuity (optional, can be complex)
-                current_volume_scans.sort(key=lambda x: x['scan_sequence_number'])
-
-                # Simple check for sequence uniqueness within the assembled volume
-                seq_numbers_in_volume = {s['scan_sequence_number'] for s in current_volume_scans}
-                if len(seq_numbers_in_volume) != len(current_volume_scans):
-                    logger.warning(
-                        f"Duplicate sequence numbers found for potential volume based at {volume_id_ts}. Skipping.")
-                    # Potentially mark base_scan_candidate as processed to avoid retrying it if it's truly problematic
-                    # processed_scan_ids_this_run.add(current_base_scan['scan_log_id']) # Caution with this
-                    continue
-
-                if len(current_volume_scans) >= min_scans:
-                    scan_ids_to_update = [s['scan_log_id'] for s in current_volume_scans]
-
-                    if args.dry_run:
-                        logger.info(
-                            f"DRY RUN: Would assign Volume ID {volume_id_ts} to {len(scan_ids_to_update)} scans (IDs: {scan_ids_to_update})")
-                        logger.info(
-                            f"DRY RUN: Volume members (Seq #): {[s['scan_sequence_number'] for s in current_volume_scans]}")
-
-                    else:
-                        logger.info(f"Assigning Volume ID {volume_id_ts} to {len(scan_ids_to_update)} scans...")
-                        logger.info(f"Members (Seq #): {[s['scan_sequence_number'] for s in current_volume_scans]}")
-                        if update_volume_identifier_for_scans(conn, scan_ids_to_update, volume_id_ts):
-                            logger.info(f"Successfully updated DB for volume {volume_id_ts}.")
-                            scans_assigned_to_volume += len(scan_ids_to_update)
-                            grouped_volumes_count += 1
+                    if pred_vol_id is not None:  # Predecessor MUST be already grouped
+                        if timedelta(seconds=0) < time_diff_from_pred <= MAX_INTER_SCAN_GAP:
+                            # Predecessor is found, IS grouped, and current scan is sequential and close in time.
+                            target_volume_id_to_assign = pred_vol_id
+                            logger.debug(
+                                f"Scan {scan_log_id} (Seq {seq_num}) will join volume {target_volume_id_to_assign.isoformat()} "
+                                f"from predecessor {predecessor_scan_data['scan_log_id']} (Seq {predecessor_seq_num}). Gap: {time_diff_from_pred}")
                         else:
-                            logger.error(f"Failed to update DB for volume {volume_id_ts}.")
-                            error_count += 1
-
-                    # Mark all these scans as processed for this run, regardless of dry_run
-                    for scan_id in scan_ids_to_update:
-                        processed_scan_ids_this_run.add(scan_id)
+                            logger.debug(
+                                f"Scan {scan_log_id} (Seq {seq_num}): Predecessor {predecessor_scan_data['scan_log_id']} (Seq {predecessor_seq_num}) "
+                                f"is grouped to {pred_vol_id.isoformat()}, but time gap {time_diff_from_pred} > {MAX_INTER_SCAN_GAP}. Cannot join.")
+                    else:
+                        # Predecessor was found but is itself not yet grouped. S_n cannot join yet.
+                        logger.debug(
+                            f"Scan {scan_log_id} (Seq {seq_num}): Predecessor {predecessor_scan_data['scan_log_id']} (Seq {predecessor_seq_num}) "
+                            f"found but is not yet grouped. Scan {scan_log_id} remains ungrouped for now.")
                 else:
                     logger.debug(
-                        f"Potential volume at {volume_id_ts} has {len(current_volume_scans)} members, less than min {min_scans}. Skipping.")
-            # else: # Not a base scan (_0), will be picked up by its respective base scan if it's part of a volume.
-            #    pass
+                        f"Scan {scan_log_id} (Seq {seq_num}): No suitable predecessor S_{predecessor_seq_num} found in DB search.")
+
+            # If a volume ID was determined for the current scan, update it in the DB.
+            if target_volume_id_to_assign:
+                if args.dry_run:
+                    logger.info(
+                        f"DRY RUN: Would assign Volume ID {target_volume_id_to_assign.isoformat()} to scan {scan_log_id} (Seq {seq_num})")
+                else:
+                    if update_volume_identifier_for_scans(conn, [scan_log_id], target_volume_id_to_assign):
+                        logger.info(
+                            f"Assigned Volume ID {target_volume_id_to_assign.isoformat()} to scan {scan_log_id} (Seq {seq_num})")
+                        scans_volume_id_assigned_count += 1
+                    else:
+                        # This could happen if the scan_log_id somehow became invalid or already updated by a concurrent process (unlikely with this flow).
+                        logger.error(
+                            f"Failed to assign Volume ID to scan {scan_log_id}. Update reported 0 rows affected.")
+                        error_count += 1
+            # If target_volume_id_to_assign is None, this scan remains ungrouped.
+            # It will be re-evaluated in the next run of `group-volumes` if it's still within `lookback_hours` & `limit`,
+            # by which time its predecessor might have been grouped.
 
     except Exception as e:
         logger.exception("An unexpected error occurred during volume grouping:")
@@ -608,10 +596,13 @@ def cli_group_volumes(args: argparse.Namespace):
             logger.info("Database connection released.")
 
     logger.info("--- Volume Grouping Summary ---")
-    logger.info(f"New Volumes Grouped:      {grouped_volumes_count}")
-    logger.info(f"Total Scans Assigned:   {scans_assigned_to_volume}")
+    logger.info(
+        f"Scans processed for Volume ID assignment: {len(ungrouped_scans) if 'ungrouped_scans' in locals() else 0}")
+    logger.info(f"Scans successfully assigned a Volume ID in this run: {scans_volume_id_assigned_count}")
     logger.info(f"Errors during DB update: {error_count}")
     logger.info("Volume grouping finished.")
+    logger.info(
+        f"Note: Scans that could not find a grouped predecessor remain ungrouped and will be re-evaluated in subsequent runs if they fall within the lookback period.")
 
 
 # +++++++++++++++++++++++++++++++++++++++++++++
@@ -727,12 +718,6 @@ def main():
         type=int,
         # Default will be taken from get_setting or hardcoded in the function
         help=f"Time window in minutes around a base scan (_0) to search for other volume members (default: from config or {get_setting('volume_grouping.time_window_minutes', 5)} min)."
-    )
-    group_volumes_parser.add_argument(
-        "--min-scans-in-volume",
-        type=int,
-        # Default will be taken from get_setting or hardcoded
-        help=f"Minimum number of scans required to form a valid volume (default: from config or {get_setting('volume_grouping.min_scans_in_volume', 2)})."
     )
     group_volumes_parser.add_argument(
         "--dry-run",
