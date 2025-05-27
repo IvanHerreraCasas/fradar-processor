@@ -16,7 +16,7 @@ import pandas as pd
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import shutil
+import psycopg2
 
 # --- Project Path Setup ---
 project_root = Path(__file__).resolve().parent.parent
@@ -473,7 +473,6 @@ def cli_index_scans(args: argparse.Namespace):
     logger.info(f"Errors:         {error_count}")
     logger.info("Scan indexing finished.")
 
-
 def cli_group_volumes(args: argparse.Namespace):
     logger = logging.getLogger(__name__)
     logger.info("=== Starting Volume Grouping (Scan-by-Scan Sequential Linking Logic) ===")
@@ -482,14 +481,15 @@ def cli_group_volumes(args: argparse.Namespace):
 
     conn = None
     scans_volume_id_assigned_count = 0
-    error_count = 0
+    error_count = 0 # For general errors, not for handled unique conflicts by db_manager
+    # skipped_due_to_conflict_count is implicitly handled by db_manager logging and successful_updates count
 
     # Configuration for grouping logic
     # Max time allowed BETWEEN two sequential scans in the same volume (e.g., _000 -> _001)
     MAX_INTER_SCAN_GAP = timedelta(minutes=get_setting('volume_grouping.max_inter_scan_gap_minutes', 1))
     # Max window to search BACKWARDS for a predecessor scan. Should be comfortably larger than MAX_INTER_SCAN_GAP.
     PREDECESSOR_SEARCH_WINDOW_SECONDS = int(
-        (MAX_INTER_SCAN_GAP.total_seconds()) * 2.5)  # e.g., 2.5 * 3 minutes = 450 seconds (7.5 minutes)
+        (MAX_INTER_SCAN_GAP.total_seconds()) * 2.5)
 
     lookback_hours = args.lookback_hours
     limit = args.limit
@@ -512,7 +512,6 @@ def cli_group_volumes(args: argparse.Namespace):
             return
 
         logger.info(f"Fetched {len(ungrouped_scans)} ungrouped scans for potential volume assignment.")
-
         iterator_func = tqdm if TQDM_AVAILABLE else tqdm_fallback_iterator
 
         for current_scan in iterator_func(ungrouped_scans, desc="Processing Scans for Volume ID", unit="scan"):
@@ -528,7 +527,7 @@ def cli_group_volumes(args: argparse.Namespace):
                 # This is a base scan. It defines its own volume ID using its nominal timestamp, falling back to precise.
                 target_volume_id_to_assign = current_nominal_ts if current_nominal_ts is not None else current_ts
                 logger.debug(
-                    f"Scan {scan_log_id} (Seq 0) defines new potential volume ID: {target_volume_id_to_assign.isoformat()}")
+                    f"Scan {scan_log_id} (Seq 0) defines new potential volume ID: {target_volume_id_to_assign.isoformat() if target_volume_id_to_assign else 'N/A'}")
             else:
                 # Not a base scan (seq_num > 0). Try to find its predecessor S_{n-1}.
                 predecessor_seq_num = seq_num - 1
@@ -541,26 +540,21 @@ def cli_group_volumes(args: argparse.Namespace):
                     current_ts,
                     PREDECESSOR_SEARCH_WINDOW_SECONDS
                 )
-
                 if predecessor_scan_data:
                     pred_ts = predecessor_scan_data['precise_timestamp']
-                    pred_vol_id = predecessor_scan_data.get('volume_identifier')  # This is the crucial part
-
-                    time_diff_from_pred = current_ts - pred_ts  # Should always be positive due to search window
-
-                    if pred_vol_id is not None:  # Predecessor MUST be already grouped
+                    pred_vol_id = predecessor_scan_data.get('volume_identifier')
+                    if pred_vol_id is not None:
+                        time_diff_from_pred = current_ts - pred_ts
                         if timedelta(seconds=0) < time_diff_from_pred <= MAX_INTER_SCAN_GAP:
-                            # Predecessor is found, IS grouped, and current scan is sequential and close in time.
                             target_volume_id_to_assign = pred_vol_id
                             logger.debug(
-                                f"Scan {scan_log_id} (Seq {seq_num}) will join volume {target_volume_id_to_assign.isoformat()} "
+                                f"Scan {scan_log_id} (Seq {seq_num}) will attempt to join volume {target_volume_id_to_assign.isoformat()} "
                                 f"from predecessor {predecessor_scan_data['scan_log_id']} (Seq {predecessor_seq_num}). Gap: {time_diff_from_pred}")
                         else:
                             logger.debug(
                                 f"Scan {scan_log_id} (Seq {seq_num}): Predecessor {predecessor_scan_data['scan_log_id']} (Seq {predecessor_seq_num}) "
                                 f"is grouped to {pred_vol_id.isoformat()}, but time gap {time_diff_from_pred} > {MAX_INTER_SCAN_GAP}. Cannot join.")
                     else:
-                        # Predecessor was found but is itself not yet grouped. S_n cannot join yet.
                         logger.debug(
                             f"Scan {scan_log_id} (Seq {seq_num}): Predecessor {predecessor_scan_data['scan_log_id']} (Seq {predecessor_seq_num}) "
                             f"found but is not yet grouped. Scan {scan_log_id} remains ungrouped for now.")
@@ -573,23 +567,40 @@ def cli_group_volumes(args: argparse.Namespace):
                 if args.dry_run:
                     logger.info(
                         f"DRY RUN: Would assign Volume ID {target_volume_id_to_assign.isoformat()} to scan {scan_log_id} (Seq {seq_num})")
+                    # Increment count for dry run to simulate a successful assignment for summary purposes
+                    scans_volume_id_assigned_count +=1
                 else:
-                    if update_volume_identifier_for_scans(conn, [scan_log_id], target_volume_id_to_assign):
-                        logger.info(
-                            f"Assigned Volume ID {target_volume_id_to_assign.isoformat()} to scan {scan_log_id} (Seq {seq_num})")
-                        scans_volume_id_assigned_count += 1
-                    else:
-                        # This could happen if the scan_log_id somehow became invalid or already updated by a concurrent process (unlikely with this flow).
-                        logger.error(
-                            f"Failed to assign Volume ID to scan {scan_log_id}. Update reported 0 rows affected.")
-                        error_count += 1
-            # If target_volume_id_to_assign is None, this scan remains ungrouped.
-            # It will be re-evaluated in the next run of `group-volumes` if it's still within `lookback_hours` & `limit`,
-            # by which time its predecessor might have been grouped.
+                    try:
+                        # `update_volume_identifier_for_scans` now returns the count of successful updates.
+                        # Since we are calling it with a list of one ID, it will return 1 on success,
+                        # or 0 if the UniqueViolation was caught and handled within it for that ID.
+                        updated_count = update_volume_identifier_for_scans(conn, [scan_log_id], target_volume_id_to_assign)
+                        if updated_count > 0:
+                             logger.info(
+                                f"Assigned Volume ID {target_volume_id_to_assign.isoformat()} to scan {scan_log_id} (Seq {seq_num})")
+                             scans_volume_id_assigned_count += updated_count
+                        # else:
+                        # The UniqueViolation is now handled and logged as a WARNING inside update_volume_identifier_for_scans.
+                        # No specific "skipped_due_to_conflict_count" is needed here as db_manager handles the warning.
+                        # The summary will reflect scans_volume_id_assigned_count correctly.
 
+                    except psycopg2.Error as db_err: # Catch other DB errors NOT caught by db_manager's specific UniqueViolation
+                        if conn and not conn.closed and conn.status != psycopg2.extensions.STATUS_IN_TRANSACTION:
+                             pass
+                        elif conn and not conn.closed :
+                             conn.rollback()
+                        logger.error(f"Database error assigning Volume ID to scan {scan_log_id} (main loop): {db_err}", exc_info=True)
+                        error_count +=1
+                    except Exception as e:
+                        if conn and not conn.closed and conn.status != psycopg2.extensions.STATUS_IN_TRANSACTION:
+                             pass
+                        elif conn and not conn.closed :
+                             conn.rollback()
+                        logger.error(f"Unexpected error assigning Volume ID to scan {scan_log_id} (main loop): {e}", exc_info=True)
+                        error_count +=1
     except Exception as e:
-        logger.exception("An unexpected error occurred during volume grouping:")
-        error_count += 1
+        logger.exception("An unexpected error occurred during volume grouping's main process:")
+        error_count += 1 # Increment general error count
     finally:
         if conn:
             release_connection(conn)
@@ -599,12 +610,13 @@ def cli_group_volumes(args: argparse.Namespace):
     logger.info(
         f"Scans processed for Volume ID assignment: {len(ungrouped_scans) if 'ungrouped_scans' in locals() else 0}")
     logger.info(f"Scans successfully assigned a Volume ID in this run: {scans_volume_id_assigned_count}")
-    logger.info(f"Errors during DB update: {error_count}")
+    # The skipped_due_to_conflict_count is now implicitly part of the difference between processed and assigned,
+    # and the warnings are logged by db_manager.
+    logger.info(f"Other errors during DB update/processing (main loop): {error_count}")
     logger.info("Volume grouping finished.")
     logger.info(
-        f"Note: Scans that could not find a grouped predecessor remain ungrouped and will be re-evaluated in subsequent runs if they fall within the lookback period.")
-
-
+        f"Note: Scans that could not find a grouped predecessor or conflicted (logged as WARNING by db_manager) "
+        f"remain ungrouped and will be re-evaluated in subsequent runs if they fall within the lookback period.")
 # +++++++++++++++++++++++++++++++++++++++++++++
 
 def main():

@@ -405,23 +405,39 @@ def get_ungrouped_scans_for_volume_assignment(conn,
     return results
 
 
-def update_volume_identifier_for_scans(conn, scan_log_ids: List[int], volume_identifier: datetime) -> bool:
+def update_volume_identifier_for_scans(conn, scan_log_ids: List[int], volume_identifier: datetime) -> int: # Returns count
     """Updates the volume_identifier for a list of scan_log_ids."""
-    if not scan_log_ids: return False
-    logger.info(f"Updating volume ID to {volume_identifier.isoformat()} for {len(scan_log_ids)} scan log entries.")
+    if not scan_log_ids: return 0
+    logger.info(f"Attempting to update volume ID to {volume_identifier.isoformat()} for {len(scan_log_ids)} scan log entries.")
     cur = None
+    successful_updates = 0
     try:
         cur = conn.cursor()
-        # Use tuple for IN clause
-        sql = "UPDATE radproc_scan_log SET volume_identifier = %s WHERE scan_log_id IN %s;"
-        cur.execute(sql, (volume_identifier, tuple(scan_log_ids)))
-        conn.commit()
-        logger.info(f"Updated {cur.rowcount} scan log entries with volume ID.")
-        return cur.rowcount > 0
-    except psycopg2.Error as e:
-        logger.error(f"DB error updating volume IDs: {e}", exc_info=True)
+        for scan_log_id in scan_log_ids: # Process one by one
+            try:
+                cur.execute(
+                    "UPDATE radproc_scan_log SET volume_identifier = %s WHERE scan_log_id = %s;",
+                    (volume_identifier, scan_log_id)
+                )
+                if cur.rowcount > 0:
+                    successful_updates += 1
+                # No need to commit here if we commit after the loop
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback() # Rollback the current transaction for this single conflicting update
+                logger.warning(f"Skipped assigning volume ID to scan_log_id {scan_log_id} due to unique constraint conflict for (volume_identifier, sequence_number, elevation). The conflicting key was for volume {volume_identifier.isoformat()}.")
+                # Start a new transaction for the next iteration if default is not autocommit
+                # If autocommit is off (default), a new transaction starts automatically after rollback.
+            except psycopg2.Error as e:
+                conn.rollback()
+                logger.error(f"DB error updating volume ID for scan_log_id {scan_log_id}: {e}", exc_info=True)
+                # Optionally re-raise or handle more specifically if this error should stop the batch
+        conn.commit() # Commit all successful non-conflicting updates
+        logger.info(f"Successfully updated {successful_updates} of {len(scan_log_ids)} scan log entries with volume ID.")
+        return successful_updates
+    except Exception as e:
         if conn and not conn.closed: conn.rollback()
-        return False
+        logger.error(f"General error during batch update of volume IDs: {e}", exc_info=True)
+        return 0
     finally:
         if cur: cur.close()
 

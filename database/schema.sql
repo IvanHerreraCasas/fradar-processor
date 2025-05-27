@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS radproc_scan_log (
     volume_identifier TIMESTAMPTZ NULL,
     nominal_filename_timestamp TIMESTAMPTZ NULL,
     processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    CONSTRAINT uq_volume_scan UNIQUE (volume_identifier, scan_sequence_number, elevation)
 );
 
 COMMENT ON TABLE radproc_scan_log IS 'Logs metadata for each processed radar scan file.';
