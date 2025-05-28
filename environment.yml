@@ -73,4 +73,5 @@ dependencies:
   - xradar=0.9.0
   - tqdm
   - psycopg2
+  - huey
 prefix: /home/ivan/miniconda3/envs/frad-proc
