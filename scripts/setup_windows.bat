@@ -91,14 +91,6 @@ IF %ERRORLEVEL% EQU 0 (
 )
 ECHO Conda environment '%CONDA_ENV_NAME%' is ready.
 
-REM Run setup.py develop
-ECHO Running setup.py develop to make 'radproc' command available...
-CALL conda run -n "%CONDA_ENV_NAME%" python "%PROJECT_ROOT%\setup.py" develop
-IF !ERRORLEVEL! NEQ 0 (
-    ECHO Error: Failed to run 'python setup.py develop' in %CONDA_ENV_NAME%.
-    ECHO The 'radproc' command might not be directly available after activating the environment.
-)
-
 REM --- Create Wrapper Script (frad-proc.bat) ---
 SET "WRAPPER_SCRIPT_PATH=%SCRIPT_DIR%frad-proc.bat"
 ECHO Creating wrapper script: "%WRAPPER_SCRIPT_PATH%"
