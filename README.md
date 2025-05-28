@@ -1,182 +1,173 @@
-# RadProc: Radar Data Processor & API
+# RadProc: Radar Data Processor & API (PostgreSQL Edition)
 
 **RadProc** is a Python application designed for processing, visualizing, and managing radar scan data, specifically targeting Furuno radar `.scnx.gz` files. It offers both a Command Line Interface (CLI) for batch processing and monitoring, and a FastAPI web API for real-time data access and background job management.
 
-It automates the workflow of monitoring new scans, generating standard data products (PPI plots, point time series), performing calculations (precipitation accumulation), creating animations, and optionally uploading data to FTP servers. The API provides endpoints to view plots, monitor updates, and manage asynchronous processing tasks.
+This version features a robust **PostgreSQL backend** for storing scan metadata, points of interest, and extracted time series data, moving away from previous file-based or YAML-based configurations for these core entities.
 
 ## Key Features
 
 * **Automated Monitoring (CLI):** Watches a specified input directory for new `.scnx.gz` scan files via `radproc run`.
 * **Core Processing:** Reads (`xarray`, `xradar`), preprocesses, and georeferences (`pyproj`) radar data.
-* **Visualization:** Generates configurable PPI plot images (`matplotlib`, `cartopy`) for specified radar variables (e.g., RATE). Saves plots historically and updates a "realtime" image for API access.
-* **Time Series Extraction:** Extracts time series data for specified variables at user-defined points (Lat/Lon/Elevation) and saves to CSV files. Can be run historically (`radproc timeseries ...`) or automatically during `radproc run`.
-* **Precipitation Accumulation:** Calculates accumulated precipitation over user-defined intervals from rate time series CSVs (`radproc accumulate ...` or via API job).
-* **Animation:** Creates animations (GIF/MP4) from generated plot images (`radproc animate ...` or via API job). Uses `imageio`.
-* **FTP Upload (Optional):** Uploads original scan files and/or generated images to FTP servers via a persistent SQLite-based queue (`core/utils/upload_queue.py`) with retries. Managed by `radproc run`.
+* **PostgreSQL Database Backend:**
+    * Logs all processed scans, including their metadata (filepath, precise timestamp, elevation, sequence number), into the `radproc_scan_log` table.
+    * Stores definitions for points of interest (`radproc_points`) and radar variables (`radproc_variables`).
+    * Manages extracted time series data in the `timeseries_data` table.
+* **Volume Grouping:** The `radproc group-volumes` command analyzes the `radproc_scan_log` to assign a common `volume_identifier` to scans belonging to the same volumetric sweep.
+* **Visualization:** Generates configurable PPI plot images (`matplotlib`, `cartopy`) for specified radar variables. Saves plots historically and updates a "realtime" image for API access.
+* **Time Series Extraction & Management:**
+    * Extracts time series data for specified variables at user-defined points (now managed in the database).
+    * Stores time series directly in the PostgreSQL database.
+    * `radproc timeseries` CLI command for historical generation, supporting specific or all database-defined points.
+    * Optimized for memory efficiency during batch processing.
+* **Precipitation Accumulation:** Calculates accumulated precipitation over user-defined intervals from rate time series (sourced from the database) via `radproc accumulate` or an API job, outputting to CSV.
+* **Animation:** Creates animations (GIF/MP4) from generated plot images (`radproc animate` or via API job). Uses `imageio` and sources scan information from the database.
+* **FTP Upload (Optional):** Uploads original scan files and/or generated images to FTP servers via a persistent SQLite-based queue with retries. Managed by `radproc run`.
 * **FastAPI Web API:**
-    * Provides HTTP endpoints to access status, configured points, latest ("realtime") plots, and specific historical plots.
-    * Offers a Server-Sent Events (SSE) stream (`/plots/stream/updates`) for real-time notification of plot updates (using `watchfiles`).
+    * Provides HTTP endpoints to access status, configured points (from DB), latest ("realtime") plots, and specific historical plots.
+    * Offers a Server-Sent Events (SSE) stream (`/plots/stream/updates`) for real-time notification of plot updates.
     * Allows submitting background jobs (timeseries generation, accumulation, animation) via a task queue (`Huey` with SQLite backend).
-    * Provides endpoints to check job status and retrieve results/data (CSV, JSON, files).
-    * Includes download endpoints for generated data products.
-* **Background Task Queue:** Uses `Huey` with an SQLite backend (`huey.db`) for handling asynchronous API tasks (e.g., historical timeseries generation). Requires a separate `huey_consumer` process.
-* **Configuration Driven:** Behavior (paths, FTP, plot styles, points, API settings, queue paths) is controlled via external YAML files (`config/`).
-* **Cross-Platform:** Designed to run on both Linux and Windows (with considerations for Huey/SQLite worker configuration).
+    * Provides endpoints to check job status and retrieve results/data (timeseries data from DB, other files from disk).
+* **Background Task Queue:** Uses `Huey` with an SQLite backend (`huey_queue.db`) for handling asynchronous API tasks. Requires a separate `huey_consumer` process.
+* **Configuration Driven:** Core behavior (paths, FTP, plot styles, API settings, queue paths) is controlled via external YAML files (`config/`). Point definitions are now primarily managed in the database.
+* **Setup Scripts:** Provides scripts for setting up the PostgreSQL database/user/schema on Linux and separate scripts for setting up the Conda application environment on Linux and Windows.
 
 ## Project Structure Highlights
 
-* `radproc/core/`: Core backend logic (I/O, processing, plotting, FTP, analysis, animation).
+* `radproc/core/`: Core backend logic (I/O, processing, plotting, DB interaction, analysis, animation).
 * `radproc/cli/`: Command-line interface (`radproc` command).
 * **`radproc/api/`**: FastAPI application code.
-    * `main.py`: FastAPI app instance, lifespan manager (starts file watcher).
-    * `routers/`: Endpoint definitions (status, points, plots, jobs, downloads).
-    * `schemas/`: Pydantic models for request/response validation.
-    * `dependencies.py`: FastAPI dependencies (e.g., config access).
-    * `state.py`: Shared state (e.g., SSE update queue).
-* **`radproc/huey_config.py`**: Huey instance configuration (uses SQLite backend).
-* **`radproc/tasks.py`**: Huey background task definitions (wrapping core logic).
-* `config/`: Holds YAML configuration files:
-    * `app_config.yaml`: Paths (input, output, images, *realtime_image_dir*, timeseries, logs, cache, animation), logging settings (*api_log_file*), main behaviour, animation defaults.
-    * `ftp_config.yaml`: FTP servers, modes, queue settings (`queue_db_path`).
+* **`radproc/huey_config.py` & `radproc/tasks.py`**: Huey task queue setup and task definitions.
+* `database/schema.sql`: PostgreSQL database schema definition.
+* `config/`: Holds YAML configuration files.
+    * `app_config.yaml`: Paths, logging, general behavior (includes `volume_grouping.max_inter_scan_gap_minutes`).
+    * `database_config.yaml`: PostgreSQL connection parameters (excluding password).
+    * `ftp_config.yaml`: FTP servers, modes, SQLite queue settings.
+    * `radar_params.yaml`: Radar hardware info.
     * `plot_styles.yaml`: Plotting appearance.
-    * `radar_params.yaml`: Radar hardware info (e.g., `azimuth_step`).
-    * `points.yaml`: Points for time series extraction.
-    * `huey_config.yaml` (*Implied/Optional*): Could hold Huey DB path instead of `app_config.yaml` if preferred.
-* `scripts/`: Setup (`setup_*.sh`/`.bat`), runtime wrappers (`frad-proc*`), service templates (`radproc.service`).
-* `data/`: Default location for persistent queues (`upload_queue.db`, `huey.db`).
-* `log/`: Default location for logs (`radproc_activity.log`, `radproc_api.log`).
-* `cache/`: Default location for map tiles and temporary animation frames.
-* *(User Configured)* `timeseries_dir`, `images_dir`, `animations`, etc.: Locations for generated data (defined in `app_config.yaml`).
+    * `points.yaml`: **Deprecated for runtime use.** May be used for initial migration to the database. Points are now managed in the `radproc_points` table.
+* `scripts/`:
+    * `setup_postgres_linux.sh`: Sets up PostgreSQL database, user, and applies `schema.sql` on Linux.
+    * `apply_schema_windows.bat`: Applies `schema.sql` to an existing PostgreSQL database on Windows.
+    * `setup_linux.sh` / `setup_windows.bat`: Set up the Conda Python environment for RadProc.
+* `data/`: Default location for persistent SQLite queues (FTP `upload_queue.db`, Huey `huey_queue.db`).
+* `environment.yml`: Conda environment definition file.
 
 ## Configuration
 
-RadProc relies heavily on YAML configuration files in `config/`. Create actual `.yaml` files from the `.template` files provided.
+RadProc relies on YAML configuration files in `config/`.
 
-* `app_config.yaml`: General settings (input/output/image paths), logging levels/files (separate `log_file` and `api_log_file` recommended), `realtime_image_dir` (for API), `timeseries_dir`, `enable_timeseries_updates`, animation defaults, etc.
-* `ftp_config.yaml`: FTP server details (host, user), upload modes, `queue_db_path`, retry settings. **NO PASSWORDS HERE**.
-* `points.yaml`: Define points of interest (`name`, `latitude`, `longitude`, `elevation`, `variable`, `description`).
-* `radar_params.yaml`: Radar info like `azimuth_step`.
-* `plot_styles.yaml`: Plotting appearance (colors, norms, map tiles).
-* `huey_config.yaml` (*Optional*): Can define `huey.db_path` here, otherwise uses default or path from `app_config.yaml` if implemented that way.
+* **`app_config.yaml`**: Paths, logging, `realtime_image_dir`, `timeseries_dir`, `enable_timeseries_updates`, `volume_grouping.max_inter_scan_gap_minutes`, etc.
+* **`database_config.yaml`**: PostgreSQL connection details (host, port, dbname, user). **Password must be set via `RADPROC_DB_PASSWORD` environment variable.**
+* **`ftp_config.yaml`**: FTP server details. **Passwords must be set via `FTP_PASSWORD_<ALIAS_UPPERCASE>` environment variables.**
+* **`points.yaml`**: Now primarily for potential one-time migration into the database. Points of interest are stored in the `radproc_points` PostgreSQL table.
 
 **Important: Secure Password Handling**
 
-* FTP passwords are NEVER stored in config files.
-* Set environment variables: `FTP_PASSWORD_<ALIAS_UPPERCASE>=your_password`. See Setup.
+* Database and FTP passwords are NEVER stored in config files.
+* Set `RADPROC_DB_PASSWORD` for PostgreSQL access.
+* Set `FTP_PASSWORD_<ALIAS_UPPERCASE>` for FTP servers.
 
 **Important: Huey SQLite Configuration**
 
-* The Huey task queue uses an SQLite database (`data/huey.db` by default).
-* For reliable operation, especially with multiple API requests or potential worker concurrency, **it is crucial to configure SQLite's Write-Ahead Logging (WAL) mode and a busy timeout.**
-* The included API (`radproc/api/main.py`) attempts to apply these settings (`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`) automatically on startup via the `lifespan` manager and `radproc.huey_config.apply_huey_pragmas()`. Verify this occurs in the API startup logs. Alternatively, run a setup script or manual command to configure the `huey.db` file once after creation.
+* The Huey task queue uses an SQLite database (`data/huey_queue.db` by default).
+* The API (`radproc/api/main.py`) attempts to apply `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;` on startup. Verify this in API logs.
 
 ## Setup
 
-1.  **Prerequisites:** Python 3.8+, `python3-venv` (Linux recommended), Git. For animations, `ffmpeg` might need to be installed system-wide if `imageio-ffmpeg` doesn't bundle it.
-2.  **Clone:** `git clone <your-repository-url>`
-3.  **Run Setup Script:**
+The setup process is now two-staged: Database Setup, then Application Environment Setup.
+
+**Stage 1: Database Setup**
+
+* **Linux:**
+    1.  Ensure PostgreSQL server is installed and running.
+    2.  Run `cd scripts && ./setup_postgres_linux.sh`. This script will prompt you for DB name, user, password, and apply the schema from `database/schema.sql`.
+* **Windows:**
+    1.  Install PostgreSQL (e.g., via EDB installer), including Command Line Tools. Add PostgreSQL `bin` to your PATH.
+    2.  Manually create a database (e.g., `radproc_db`) and a user (e.g., `radproc_user`) with a password, granting appropriate privileges using `pgAdmin` or `psql`.
+    3.  Run `cd scripts && apply_schema_windows.bat`. This script will prompt for connection details and apply the `database/schema.sql`.
+* **Post-DB Setup:**
+    1.  Update `config/database_config.yaml` with your DB connection details (host, port, dbname, user).
+    2.  Set the `RADPROC_DB_PASSWORD` environment variable to the password of your RadProc database user.
+
+**Stage 2: RadProc Application Environment Setup (Conda)**
+
+1.  **Prerequisites:** Anaconda or Miniconda installed, Git. For animations, `ffmpeg` might need to be installed system-wide if `imageio-ffmpeg` doesn't bundle it.
+2.  **Clone:** `git clone <your-repository-url>` (if not already done)
+3.  **Run Application Setup Script:**
     * Linux: `cd scripts && ./setup_linux.sh`
     * Windows: `cd scripts && setup_windows.bat`
-    * (Creates `.venv`, installs requirements from `requirements.txt` including `fastapi`, `uvicorn`, `huey`, `peewee`, `watchfiles`, etc., creates wrappers, sets up default directories).
-4.  **Configure:** Copy `config/*.yaml.template` files to `config/*.yaml` and edit them. Set required paths in `app_config.yaml` (`input_dir`, `output_dir`, `images_dir`, `realtime_image_dir`, `timeseries_dir`, log paths). Configure points, FTP, etc.
-5.  **Set Environment Variables:** Set `FTP_PASSWORD_...` variables for any configured FTP servers.
+    * (This creates/updates the Conda environment from `environment.yml`, creates app directories, and sets up CLI wrappers).
+4.  **Configure:** Review and edit other `config/*.yaml` files as needed (e.g., `app_config.yaml`, `ftp_config.yaml`).
+5.  **Set FTP Passwords:** Set `FTP_PASSWORD_...` environment variables if using FTP.
 
 ## Usage
 
 ### Command Line Interface (CLI)
 
-Activate virtual environment (`source .venv/bin/activate` or `.venv\Scripts\activate.bat`) or use the wrapper scripts (`frad-proc`, `frad-proc.bat`) potentially added to your PATH by the setup scripts.
+Activate the Conda environment (`conda activate frad-proc` or the name in your `environment.yml`) or use the wrapper scripts (`frad-proc`, `frad-proc.bat`) potentially added to your PATH.
 
 * **Show Help:**
     ```bash
     radproc --help
     ```
-
 * **Run Continuous Monitoring:**
-    * Processes new scans, generates plots (including realtime), optionally updates timeseries, starts FTP upload worker.
-    * This is the primary mode for data ingestion and basic product generation.
     ```bash
     radproc run
     ```
-    *(Press Ctrl+C to stop)*
-
-* **Reprocess Historical Plots:**
+* **Index Existing Scans into DB:**
     ```bash
-    radproc reprocess <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM>
+    radproc index-scans [--output-dir /path/to/processed_scans] [--dry-run]
     ```
-
-* **Generate/Update Point Time Series (Historical):**
+* **Group Scans into Volumes:**
     ```bash
-    radproc timeseries <point_name> <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> [--variable VAR]
+    radproc group-volumes [--lookback-hours N] [--limit N] [--dry-run]
     ```
-
-* **Calculate Accumulated Precipitation:**
-    * Ensures source rate timeseries is up-to-date for the range first.
+* **Generate/Update Point Time Series in DB (Historical):**
     ```bash
-    radproc accumulate <point_name> <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> <interval> [--variable RATE_VAR] [--output-file PATH]
+    radproc timeseries <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> [--points P1 P2] [--variable VAR]
     ```
-    *(Example interval: '1H', '15min', '1D')*
-
-* **Create Animation File:**
+    *(If `--points` is omitted, processes all points from the database)*
+* **Calculate Accumulated Precipitation (from DB data, outputs CSV):**
+    ```bash
+    radproc accumulate <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> --points <point_name> --interval <interval> [--variable RATE_VAR] [--output-file PATH]
+    ```
+* **Create Animation File (uses DB for scan info):**
     ```bash
     radproc animate <variable> <elevation> <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> <output_file.[gif|mp4|...]> [--extent LONMIN LONMAX LATMIN LATMAX] [--no-watermark] [--fps FPS]
     ```
 
 ### Web API
 
-The API provides endpoints for accessing data and managing background jobs.
-
 1.  **Run the API Server:**
     ```bash
-    # Activate virtual environment
-    # Needs to run separately from 'radproc run' and 'huey_consumer'
+    # Activate Conda environment
     uvicorn radproc.api.main:app --host 0.0.0.0 --port 8000 --reload
     ```
-    * Access the interactive documentation (Swagger UI) at `http://localhost:8000/docs`.
-    * Access the ReDoc documentation at `http://localhost:8000/redoc`.
+    * Access docs: `http://localhost:8000/docs` (Swagger), `http://localhost:8000/redoc` (ReDoc).
 
 2.  **Run the Huey Worker (for API Background Jobs):**
-    * This process executes tasks queued by the API (e.g., historical timeseries). It needs to run separately from the API server and the `radproc run` monitor.
     ```bash
-    # Activate virtual environment
-    # CRITICAL for SQLite: Use -k thread and low worker count (-w 1 or -w 2)
-    # Ensure PRAGMAs (WAL mode, busy_timeout) are set on huey.db
+    # Activate Conda environment
     huey_consumer radproc.huey_config.huey -k thread -w 1 -v
     ```
-    * See "Running as a Service" for production setups.
 
 3.  **API Endpoint Highlights:**
-    * `GET /api/v1/status`: Basic API status.
-    * `GET /api/v1/points`: List configured points of interest.
-    * `GET /api/v1/plots/realtime/{variable}/{elevation}`: Get the latest plot image.
-    * `GET /api/v1/plots/historical/{variable}/{elevation}/{datetime_str}`: Get a specific past plot image.
-    * `GET /api/v1/plots/frames`: Get list of available frame identifiers for a sequence (client-side animation).
-    * `GET /api/v1/plots/stream/updates`: Server-Sent Events stream for real-time plot update notifications.
-    * `POST /api/v1/jobs/{timeseries|accumulation|animation}`: Submit background jobs.
-    * `GET /api/v1/jobs/{task_id}/status`: Check job status (PENDING, SUCCESS, FAILURE, REVOKED).
-    * `GET /api/v1/jobs/{timeseries|accumulation|animation}/{task_id}/data`: Retrieve job results/data files.
-    * `GET /api/v1/downloads/{timeseries|accumulation|animation}/{filename}`: Download generated files.
-
-## Running as a Service
-
-To run continuously in production, you need to manage multiple processes:
-
-1.  **RadProc Monitor (`radproc run`)**: For ingesting new scans and core processing/plotting/FTP. (Optional if only using API jobs for processing).
-2.  **FastAPI Server (`uvicorn ...`)**: To serve the web API.
-3.  **Huey Worker (`huey_consumer ...`)**: To process background jobs submitted via the API.
-
-* **Linux:** Use `systemd`. Create separate service files for Uvicorn and `huey_consumer`. You might adapt `scripts/radproc.service` or create new ones. Ensure correct user, working directory, environment variables (including FTP passwords!), and the recommended Huey consumer flags (`-k thread -w 1`). Ensure SQLite PRAGMAs are set.
-* **Windows:** Use Task Scheduler or a tool like NSSM (Non-Sucking Service Manager) to run the Uvicorn command and the `huey_consumer` command reliably as services. Use the `.bat` wrapper scripts or direct Python calls within the virtual environment.
+    * `GET /status`: Basic API status.
+    * `GET /points`: List configured points of interest (from DB).
+    * `GET /points/{point_name}`: Get details for a specific point (from DB).
+    * `GET /plots/realtime/{variable}/{elevation}`: Get the latest plot image.
+    * `GET /plots/historical/{variable}/{elevation}/{datetime_str}`: Get a specific past plot image.
+    * `GET /plots/frames`: Get list of available frame identifiers for a sequence.
+    * `GET /plots/stream/updates`: Server-Sent Events stream for real-time plot update notifications.
+    * `POST /jobs/{timeseries|accumulation|animation}`: Submit background jobs. Timeseries jobs now operate fully against the PostgreSQL database.
+    * `GET /jobs/{task_id}/status`: Check job status.
+    * `GET /jobs/{timeseries|accumulation|animation}/{task_id}/data`: Retrieve job results/data files.
 
 ## Logging
 
-* Configured in `app_config.yaml`.
-* Supports separate log files for the CLI (`log_file`) and API (`api_log_file`).
-* Includes console logging with configurable levels.
-* Uses rotating file handlers to manage log size.
-* Huey consumer output can be directed to a file using the `-l` flag or captured by systemd/supervisor.
+* Configured in `app_config.yaml` (separate `log_file`, `api_log_file`, `huey_log_file`).
+* Huey consumer output can be directed to a file using its own flags or system service management.
 
 ## Dependencies
 
-See `requirements.txt`. Key libraries include:
-`fastapi`, `uvicorn`, `huey`, `peewee` (for Huey/SQLite), `watchfiles` (for API SSE), `xarray`, `xradar`, `pandas`, `matplotlib`, `cartopy`, `pyyaml`, `watchdog` (for CLI monitor), `pyproj`, `imageio`, `imageio-ffmpeg`.
+See `environment.yml`. Key libraries include: `fastapi`, `uvicorn`, `huey`, `psycopg2` (for PostgreSQL), `watchfiles`, `xarray`, `xradar`, `pandas`, `matplotlib`, `cartopy`, `pyyaml`, `tqdm`, `imageio`, `imageio-ffmpeg`.
