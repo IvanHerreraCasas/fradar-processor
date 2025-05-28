@@ -1,146 +1,158 @@
-@echo off
-setlocal EnableDelayedExpansion
+@ECHO OFF
+SETLOCAL ENABLEDELAYEDEXPANSION
 
-:: --- Configuration ---
-set "current_script_dir=%~dp0"
-pushd "%current_script_dir%.."
-set "project_path=%CD%"
-popd
-
-:: Define environment path (using prefix)
-set "env_prefix=%project_path%\.venv"
-set "env_file=%project_path%\environment.yml"
-set "scripts_dir=%project_path%\scripts"
-set "log_dir=%project_path%\log"
-set "data_dir=%project_path%\data"
-set "cache_dir=%project_path%\cache"
-set "anim_tmp_dir=%cache_dir%\animation_tmp"
-set "anim_output_dir=%project_path%\animations"
-
-:: --- Verification ---
-echo Project Root: %project_path%
-:: Check if conda command exists
-where conda >nul 2>nul
-if %errorlevel% neq 0 (
-    echo ERROR: 'conda' command not found in PATH.
-    echo Please install Anaconda or Miniconda and add it to your PATH.
-    goto :error
+ECHO --- Starting RadProc Application Setup (Windows - Conda) ---
+ECHO IMPORTANT: This script assumes PostgreSQL database and user have ALREADY been set up manually.
+ECHO Ensure your PostgreSQL server is running, a database and user for RadProc exist,
+ECHO and you have updated 'config\database_config.yaml' and set the RADPROC_DB_PASSWORD environment variable.
+ECHO.
+CHOICE /C YN /M "Proceed with RadProc application setup?"
+IF ERRORLEVEL 2 (
+    ECHO Application setup aborted by user.
+    EXIT /B 0
 )
-if not exist "%env_file%" (
-    echo ERROR: environment.yml not found at: %env_file%
-    goto :error
-)
-echo Conda environment file verified: %env_file%
-
-:: --- Setup ---
-echo Ensuring required directories exist...
-if not exist "%log_dir%" mkdir "%log_dir%" || (echo Warning: Failed to create log directory & goto :error)
-if not exist "%data_dir%" mkdir "%data_dir%" || (echo Warning: Failed to create data directory & goto :error)
-if not exist "%scripts_dir%" mkdir "%scripts_dir%" || (echo Warning: Failed to create scripts directory & goto :error)
-if not exist "%cache_dir%" mkdir "%cache_dir%" || (echo Warning: Failed to create cache directory & goto :error)
-if not exist "%anim_tmp_dir%" mkdir "%anim_tmp_dir%" || (echo Warning: Failed to create animation temp directory & goto :error)
-if not exist "%anim_output_dir%" mkdir "%anim_output_dir%" || (echo Warning: Failed to create animation output directory & goto :error)
-
-:: Remove existing environment directory if it exists
-if exist "%env_prefix%\" (
-    echo Removing existing environment directory: %env_prefix%
-    rmdir /S /Q "%env_prefix%" || (echo WARNING: Failed to remove existing .venv directory.)
+IF ERRORLEVEL 1 (
+    ECHO.
 )
 
-:: Create Conda environment using the environment.yml file and prefix
-echo Creating Conda environment at %env_prefix% from %env_file%...
-conda env create --prefix "%env_prefix%" --file "%env_file%" || (
-    echo ERROR: Failed to create Conda environment. Check %env_file%.
-    goto :error
+REM --- Determine Paths ---
+SET "SCRIPT_DIR=%~dp0"
+FOR %%A IN ("%SCRIPT_DIR%..") DO SET "PROJECT_ROOT=%%~fA"
+
+REM Define key paths relative to project root
+SET "RADPROC_MODULE_DIR=%PROJECT_ROOT%\radproc"
+SET "REQUIREMENTS_PATH=%PROJECT_ROOT%\requirements.txt"
+SET "ENVIRONMENT_YAML_PATH=%PROJECT_ROOT%\environment.yml"
+SET "LOG_DIR=%PROJECT_ROOT%\log"
+SET "DATA_DIR=%PROJECT_ROOT%\data"
+SET "CACHE_DIR=%PROJECT_ROOT%\cache"
+SET "ANIM_TMP_DIR=%CACHE_DIR%\animation_tmp"
+SET "ANIM_OUTPUT_DIR=%PROJECT_ROOT%\animations"
+SET "API_JOB_OUTPUT_DIR=%CACHE_DIR%\api_job_outputs"
+SET "PYTHON_MODULE=radproc.cli.main"
+
+REM --- Verification ---
+ECHO Verifying prerequisites...
+IF NOT EXIST "%RADPROC_MODULE_DIR%" (
+    ECHO Error: Module directory not found at: "%RADPROC_MODULE_DIR%"
+    EXIT /B 1
 )
-echo Conda environment created successfully.
+IF NOT EXIST "%ENVIRONMENT_YAML_PATH%" (
+    ECHO Error: environment.yml not found at: "%ENVIRONMENT_YAML_PATH%"
+    EXIT /B 1
+)
+WHERE conda >nul 2>nul
+IF %ERRORLEVEL% NEQ 0 (
+    ECHO Error: 'conda' command not found. Please install Anaconda or Miniconda and add to PATH.
+    EXIT /B 1
+)
+ECHO Prerequisites verified.
 
-:: --- Apply Huey DB PRAGMAs (Requires the environment) ---
-set "PRAGMA_SCRIPT=%project_path%\scripts\apply_pragmas.py"
-if exist "%PRAGMA_SCRIPT%" (
-    echo Attempting to apply Huey DB PRAGMAs...
-    conda run -p "%env_prefix%" python "%PRAGMA_SCRIPT%" || (echo Warning: Failed to apply PRAGMAs automatically.)
-) else (
-    echo Optional: Create scripts\apply_pragmas.py to automatically configure Huey DB.
+REM --- Setup ---
+
+REM Create essential application directories if they don't exist
+ECHO Ensuring required application directories exist...
+IF NOT EXIST "%LOG_DIR%" MKDIR "%LOG_DIR%"
+IF NOT EXIST "%DATA_DIR%" MKDIR "%DATA_DIR%"
+IF NOT EXIST "%CACHE_DIR%" MKDIR "%CACHE_DIR%"
+IF NOT EXIST "%ANIM_TMP_DIR%" MKDIR "%ANIM_TMP_DIR%"
+IF NOT EXIST "%ANIM_OUTPUT_DIR%" MKDIR "%ANIM_OUTPUT_DIR%"
+IF NOT EXIST "%API_JOB_OUTPUT_DIR%" MKDIR "%API_JOB_OUTPUT_DIR%"
+ECHO Application directories ensured.
+
+REM Create/Update Conda environment
+ECHO Creating/Updating Conda environment from "%ENVIRONMENT_YAML_PATH%"...
+REM Extract env name from YAML (simple parsing, might need more robust if comments exist before name)
+FOR /F "tokens=2 delims=: " %%G IN ('findstr /B /C:"name:" "%ENVIRONMENT_YAML_PATH%"') DO SET "CONDA_ENV_NAME=%%G"
+
+IF "%CONDA_ENV_NAME%"=="" (
+    ECHO Error: Could not determine Conda environment name from environment.yml.
+    ECHO Please ensure it has a 'name: your_env_name' line.
+    SET CONDA_ENV_NAME=frad-proc
+    ECHO Using default name '%CONDA_ENV_NAME%'
 )
 
+REM Check if environment exists
+CALL conda env list | findstr /B /C:"%CONDA_ENV_NAME% " >nul
+IF %ERRORLEVEL% EQU 0 (
+    ECHO Environment '%CONDA_ENV_NAME%' already exists. Updating...
+    CALL conda env update --name "%CONDA_ENV_NAME%" -f "%ENVIRONMENT_YAML_PATH%" --prune
+    IF !ERRORLEVEL! NEQ 0 (
+        ECHO Error: Failed to update Conda environment '%CONDA_ENV_NAME%'.
+        EXIT /B 1
+    )
+) ELSE (
+    ECHO Creating new Conda environment '%CONDA_ENV_NAME%'...
+    CALL conda env create -f "%ENVIRONMENT_YAML_PATH%"
+    IF !ERRORLEVEL! NEQ 0 (
+        ECHO Error: Failed to create Conda environment '%CONDA_ENV_NAME%'.
+        EXIT /B 1
+    )
+)
+ECHO Conda environment '%CONDA_ENV_NAME%' is ready.
 
-:: --- Create Wrapper Scripts using conda run ---
-echo Creating wrapper scripts...
+REM Run setup.py develop
+ECHO Running setup.py develop to make 'radproc' command available...
+CALL conda run -n "%CONDA_ENV_NAME%" python "%PROJECT_ROOT%\setup.py" develop
+IF !ERRORLEVEL! NEQ 0 (
+    ECHO Error: Failed to run 'python setup.py develop' in %CONDA_ENV_NAME%.
+    ECHO The 'radproc' command might not be directly available after activating the environment.
+)
 
-:: Wrapper for CLI ('frad-proc.bat')
-set "WRAPPER_CLI_PATH=%scripts_dir%\frad-proc.bat"
-set "PYTHON_MODULE_CLI=radproc.cli.main"
-echo Creating: %WRAPPER_CLI_PATH%
+REM --- Create Wrapper Script (frad-proc.bat) ---
+SET "WRAPPER_SCRIPT_PATH=%SCRIPT_DIR%frad-proc.bat"
+ECHO Creating wrapper script: "%WRAPPER_SCRIPT_PATH%"
+
 (
-    echo @echo off
-    echo setlocal
-    echo set "SCRIPT_ROOT_DIR=%%~dp0"
-    echo set "PROJECT_ROOT=%%SCRIPT_ROOT_DIR%%.."
-    echo set "ENV_PREFIX=%%PROJECT_ROOT%%\.venv"
-    echo call conda run -p "%%ENV_PREFIX%%" python -m %PYTHON_MODULE_CLI% %%*
-    echo endlocal
-) > "%WRAPPER_CLI_PATH%" || (echo ERROR: Failed to create CLI wrapper & goto :error)
+ECHO @ECHO OFF
+ECHO SETLOCAL
+ECHO REM Wrapper script for the RadProc application (Conda environment^)
+ECHO.
+ECHO SET "PYTHON_MODULE=%PYTHON_MODULE%"
+ECHO SET "CONDA_ENV_NAME=%CONDA_ENV_NAME%"
+ECHO SET "PROJECT_ROOT_IN_WRAPPER=%%~dp0.."
+ECHO.
+ECHO REM Try to activate Conda environment.
+ECHO REM This assumes conda is in PATH and the shell is initialized for conda.
+ECHO CALL conda activate %CONDA_ENV_NAME%
+ECHO IF ERRORLEVEL 1 (
+ECHO     ECHO Error: Failed to activate Conda environment '%CONDA_ENV_NAME%'.
+ECHO     ECHO Please activate it manually: conda activate %CONDA_ENV_NAME%
+ECHO     PAUSE
+ECHO     EXIT /B 1
+ECHO )
+ECHO.
+ECHO REM Execute the Python module
+ECHO PUSHD "%%PROJECT_ROOT_IN_WRAPPER%%"
+ECHO python -m %PYTHON_MODULE% %%*
+ECHO POPD
+ECHO.
+ECHO ENDLOCAL
+) > "%WRAPPER_SCRIPT_PATH%"
 
-:: Wrapper for API ('run-api.bat')
-set "WRAPPER_API_PATH=%scripts_dir%\run-api.bat"
-set "PYTHON_MODULE_API=radproc.api.main:app"
-set "DEFAULT_HOST_API=127.0.0.1"
-set "DEFAULT_PORT_API=8001"
-echo Creating: %WRAPPER_API_PATH%
-(
-    echo @echo off
-    echo setlocal
-    echo set "SCRIPT_ROOT_DIR=%%~dp0"
-    echo set "PROJECT_ROOT=%%SCRIPT_ROOT_DIR%%.."
-    echo set "ENV_PREFIX=%%PROJECT_ROOT%%\.venv"
-    echo echo Starting Uvicorn in %%ENV_PREFIX%%...
-    echo call conda run -p "%%ENV_PREFIX%%" python -m uvicorn %PYTHON_MODULE_API% --host %DEFAULT_HOST_API% --port %DEFAULT_PORT_API% %%*
-    echo endlocal
-) > "%WRAPPER_API_PATH%" || (echo ERROR: Failed to create API wrapper & goto :error)
+ECHO.
+ECHO --- RadProc Application Setup Complete ---
+ECHO Conda environment '%CONDA_ENV_NAME%' created/updated.
+ECHO Application directories created.
+ECHO Wrapper script created at: "%WRAPPER_SCRIPT_PATH%"
+ECHO.
+ECHO To use RadProc:
+ECHO 1. Open a new Anaconda Prompt or Command Prompt where Conda is initialized.
+ECHO 2. Manually activate the Conda environment:
+ECHO    conda activate %CONDA_ENV_NAME%
+ECHO 3. Then you can run the 'radproc' command (if setup.py develop succeeded^):
+ECHO    radproc --help
+ECHO    radproc run
+ECHO OR
+ECHO 1. Add the '"%SCRIPT_DIR%"' directory to your system PATH.
+ECHO 2. Then, from any new command prompt, run RadProc using the wrapper:
+ECHO    frad-proc --help
+ECHO    frad-proc run
+ECHO.
+ECHO IMPORTANT: Remember to configure your 'config\*.yaml' files, especially:
+ECHO   - config\database_config.yaml (with details of your PostgreSQL setup^)
+ECHO   - config\app_config.yaml (paths, etc.^)
+ECHO And set the RADPROC_DB_PASSWORD environment variable.
 
-:: Wrapper for Worker ('run-worker.bat')
-set "WRAPPER_WORKER_PATH=%scripts_dir%\run-worker.bat"
-set "HUEY_INSTANCE=radproc.huey_config.huey"
-set "WORKER_TYPE=thread"
-set "WORKER_COUNT=2"
-set "LOG_FILE_WORKER=%log_dir%\huey_worker.log"
-set "LOG_FILE_FLAG=-l "%LOG_FILE_WORKER%""
-set "LOG_LEVEL_FLAG=-q"
-echo Creating: %WRAPPER_WORKER_PATH%
-(
-    echo @echo off
-    echo setlocal
-    echo set "SCRIPT_ROOT_DIR=%%~dp0"
-    echo set "PROJECT_ROOT=%%SCRIPT_ROOT_DIR%%.."
-    echo set "ENV_PREFIX=%%PROJECT_ROOT%%\.venv"
-    echo echo Starting Huey Consumer in %%ENV_PREFIX%%...
-    echo call conda run -p "%%ENV_PREFIX%%" python -m huey_consumer %HUEY_INSTANCE% -k %WORKER_TYPE% -w %WORKER_COUNT% %LOG_LEVEL_FLAG% %LOG_FILE_FLAG% %%*
-    echo endlocal
-) > "%WRAPPER_WORKER_PATH%" || (echo ERROR: Failed to create worker wrapper & goto :error)
-
-
-:: --- Completion ---
-echo.
-echo Setup complete (using Conda).
-echo Environment created at: %env_prefix%
-echo Wrapper scripts created in: %scripts_dir%
-echo.
-echo To use:
-echo 1. Set required environment variables (e.g., FTP_PASSWORD_...).
-echo 2. Add "%scripts_dir%" to your system PATH variable (optional).
-echo 3. Run commands using wrappers from any directory (if PATH is set) or from scripts dir:
-echo    frad-proc run
-echo    run-api --port 8000
-echo    run-worker -w 1 -v
-echo 4. For services (NSSM/Task Scheduler): Configure them to run the .bat wrapper scripts.
-goto :eof
-
-:error
-echo.
-echo !!!!! SETUP FAILED !!!!!
-pause
-exit /b 1
-
-:eof
-endlocal
+ENDLOCAL
+EXIT /B 0
