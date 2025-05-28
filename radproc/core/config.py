@@ -37,7 +37,6 @@ def load_config(config_dir: str = CONFIG_DIR) -> None:
         'ftp': 'ftp_config.yaml',
         'radar': 'radar_params.yaml',
         'styles': 'plot_styles.yaml',
-        'points_config': 'points.yaml', # Keep for migration script access
         'database': 'database_config.yaml',
     }
     required_configs = ['app', 'database'] # 'database' is now also essential
