@@ -2,7 +2,6 @@
 
 import os
 import logging
-import numpy as np
 import pandas as pd
 from datetime import datetime, timezone  # Ensure timezone is imported
 from typing import Dict, Any, Optional
@@ -281,90 +280,3 @@ def process_new_scan(filepath: str, config_override: Optional[Dict[str, Any]] = 
                 ds.close()
             except Exception:
                 pass
-
-
-def generate_historical_plots(start_dt: datetime, end_dt: datetime, config: Optional[Dict[str, Any]] = None) -> None:
-    """
-    Finds processed radar scan files (from radproc_scan_log) within a date range
-    and regenerates plots for them.
-    """
-    # This function will need to be updated to query radproc_scan_log
-    # via db_manager to get filepaths, instead of get_filepaths_in_range.
-    logger.warning("generate_historical_plots: Needs update to use radproc_scan_log via db_manager.")
-
-    # --- TEMPORARY: Keep old logic using get_filepaths_in_range for now ---
-    # --- THIS WILL BE REPLACED ---
-    if config is None: config = get_config()
-    processed_data_dir = get_setting('app.output_dir')
-    if not processed_data_dir:
-        logger.error("Config missing 'app.output_dir'. Cannot find historical files for plotting.")
-        return
-
-    conn_temp = None
-    try:
-        conn_temp = get_connection()
-        # Query radproc_scan_log for filepaths based on elevation and time
-        # This requires knowing which elevations to reprocess, or reprocessing all.
-        # For simplicity, let's assume we reprocess for all elevations found in the log for now.
-        # A more targeted approach might take elevation as an argument.
-
-        # This is a placeholder for what query_scan_log_for_timeseries_processing does,
-        # but for plotting we might not need a specific elevation filter initially, or we might
-        # iterate through distinct elevations in the log for the time range.
-        # For now, this function remains largely non-functional until fully adapted.
-
-        # TEMPORARY: Using a dummy list to avoid breaking structure
-        # In a real scenario, you'd query radproc_scan_log
-        logger.info(f"Attempting to find scans in log for reprocessing plots: {start_dt} to {end_dt}")
-        all_scans_in_range = []  # This should be populated by a db_manager query
-
-        # Example of how you might get distinct elevations and then query per elevation
-        # distinct_elevs_sql = "SELECT DISTINCT elevation FROM radproc_scan_log WHERE precise_timestamp >= %s AND precise_timestamp <= %s;"
-        # cur = conn_temp.cursor()
-        # cur.execute(distinct_elevs_sql, (start_dt, end_dt))
-        # for row in cur.fetchall():
-        #    target_elev = row[0]
-        #    scans_for_elev = query_scan_log_for_timeseries_processing(conn_temp, target_elev, start_dt, end_dt) # Reuses existing func
-        #    all_scans_in_range.extend(scans_for_elev) # Collects (filepath, precise_ts, scan_log_id)
-
-        # For now, let's assume `all_scans_in_range` is populated with (filepath, precise_datetime_from_log)
-        # The `process_new_scan` function is the main processing unit.
-        # We are calling it in a 'reprocessing' context so it shouldn't move files
-        # or re-log to scan_log (ideally).
-
-        if not all_scans_in_range:  # Placeholder check
-            logger.info("No historical scan files found in radproc_scan_log for the specified range for plotting.")
-            return
-
-        logger.info(f"Found {len(all_scans_in_range)} scan entries in log to reprocess for plots.")
-        processed_count = 0;
-        failed_count = 0
-        for scan_filepath, _scan_dt_from_log, _scan_log_id in all_scans_in_range:  # Use filepath from log
-            logger.info(f"Reprocessing plots for historical file: {scan_filepath}")
-
-            # Create a temporary config to disable file moving and timeseries updates for this plot-only run
-            temp_config_dict = get_config().copy()  # Get a mutable copy
-            temp_config_dict['app'] = temp_config_dict.get('app', {}).copy()  # Ensure 'app' key exists and is mutable
-            temp_config_dict['app']['move_file_after_processing'] = False
-            temp_config_dict['app']['enable_timeseries_updates'] = False
-            # Also prevent re-logging to scan_log - process_new_scan would need a flag for this.
-            # For now, it will try to re-log but ON CONFLICT should handle it.
-
-            try:
-                # process_new_scan will read the file again.
-                success = process_new_scan(scan_filepath, config_override=temp_config_dict)
-                if success:
-                    processed_count += 1
-                else:
-                    failed_count += 1; logger.warning(f"Failed to reprocess plots for: {scan_filepath}")
-            except Exception as e:
-                failed_count += 1;
-                logger.error(f"Critical error reprocessing plots for {scan_filepath}: {e}", exc_info=True)
-        logger.info(f"Historical plot reprocessing finished. Processed: {processed_count}, Failed: {failed_count}")
-
-    except ConnectionError as ce:
-        logger.error(f"DB Connection error in generate_historical_plots: {ce}")
-    except Exception as e:
-        logger.error(f"Error in generate_historical_plots: {e}", exc_info=True)
-    finally:
-        if conn_temp: release_connection(conn_temp)

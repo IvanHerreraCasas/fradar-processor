@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import pandas as pd
 from typing import List, Optional, Tuple
 
+from .analysis import logger
 from .utils.helpers import parse_datetime_from_filename  # Keep for nominal_ts
 from .config import get_setting
 from .utils.helpers import parse_scan_sequence_number
@@ -168,7 +169,6 @@ def read_scan(filepath: str, variables: Optional[List[str]] = None) -> Optional[
     finally:
         if ds_raw is not None: ds_raw.close()
 
-
 def extract_scan_key_metadata(scan_filepath: str) -> Optional[Tuple[datetime, float, int]]:
     """
     Reads a scan file to extract its precise internal timestamp (UTC),
@@ -239,3 +239,24 @@ def extract_scan_key_metadata(scan_filepath: str) -> Optional[Tuple[datetime, fl
     finally:
         if ds_raw is not None:
             ds_raw.close()
+
+def extract_point_value(ds: xr.Dataset, variable: str, az_idx: int, rg_idx: int) -> float:
+    """
+    Extracts data value for a variable at given azimuth/range indices. Assumes single time step.
+    Returns np.nan on failure.
+    """
+    try:
+        if variable not in ds.data_vars:
+            logger.warning(f"Variable '{variable}' not found in dataset for value extraction.")
+            return np.nan
+        data_point = ds[variable].isel(time=0, elevation=0, azimuth=az_idx, range=rg_idx)
+        value = data_point.compute().item() if hasattr(data_point.data, 'compute') else data_point.item()
+        if isinstance(value, (int, float, np.number)) and not np.isnan(value):
+            return float(value)
+        return np.nan
+    except IndexError:
+        logger.error(f"Indices az={az_idx}, rg={rg_idx} out of bounds for var '{variable}'.")
+        return np.nan
+    except Exception as e:
+        logger.error(f"Failed to extract value for '{variable}' at az={az_idx}, rg={rg_idx}: {e}", exc_info=True)
+        return np.nan

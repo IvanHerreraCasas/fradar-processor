@@ -1,6 +1,5 @@
 # core/analysis.py
 
-import os
 import logging
 from typing import Optional, Tuple, Dict, List, Any, Set
 from collections import defaultdict
@@ -11,9 +10,9 @@ from datetime import datetime, timezone
 
 # Import necessary functions from other modules
 from .config import get_all_points_config, get_setting, get_point_config
-from .utils.geo import get_dataset_crs, georeference_dataset, transform_point_to_dataset_crs
+from .utils.geo import georeference_dataset, find_nearest_indices
 from .utils.csv_handler import write_timeseries_csv  # Used for outputting accumulation result
-from .data import read_scan  # extract_scan_key_metadata is used by processor
+from .data import read_scan, extract_point_value  # extract_scan_key_metadata is used by processor
 # Import DB Manager
 from .db_manager import (
     get_connection, release_connection, get_or_create_variable_id,
@@ -37,82 +36,6 @@ except ImportError:
         return iterable
 
 logger = logging.getLogger(__name__)
-
-
-# --- Core Analysis Functions (find_nearest_indices, extract_point_value) ---
-def find_nearest_indices(ds_geo: xr.Dataset, target_lat: float, target_lon: float, max_dist_meters: float = 200.0) -> \
-Optional[Tuple[int, int]]:
-    """
-    Finds the azimuth and range indices in the dataset closest to a target lat/lon.
-    Transforms the target coordinates, calculates distances in the projected space,
-    and finds the minimum distance indices. Checks if the minimum distance
-    is within a specified threshold.
-    Args:
-        ds_geo: Georeferenced xarray.Dataset.
-        target_lat: Target latitude (decimal degrees).
-        target_lon: Target longitude (decimal degrees).
-        max_dist_meters: Maximum allowable distance (meters) between target point
-                         and closest radar bin center. If exceeded, returns None.
-    Returns:
-        A tuple (azimuth_index, range_index) or None.
-    """
-    logger.debug(f"Finding nearest indices for Lat={target_lat}, Lon={target_lon}")
-    ds_crs = get_dataset_crs(ds_geo)
-    if ds_crs is None:
-        logger.error(f"Cannot find CRS in georeferenced dataset for point ({target_lat}, {target_lon}).")
-        return None
-    transformed_coords = transform_point_to_dataset_crs(target_lat, target_lon, ds_crs)
-    if transformed_coords is None:
-        logger.error("Coordinate transformation failed for index finding.")
-        return None
-    target_x, target_y = transformed_coords
-    if not all(coord in ds_geo.coords and ds_geo[coord].ndim == 2 for coord in ['x', 'y']):
-        logger.error("Dataset missing 2D 'x' or 'y' coordinates for index finding.")
-        return None
-    try:
-        x_coords = ds_geo['x'].data
-        y_coords = ds_geo['y'].data
-        dist_sq = (x_coords - target_x) ** 2 + (y_coords - target_y) ** 2
-        dist_sq_computed = dist_sq.compute() if hasattr(dist_sq, 'compute') else dist_sq
-        if np.all(np.isnan(dist_sq_computed)):
-            logger.warning("All calculated distances are NaN. Cannot find minimum for index.")
-            return None
-        min_flat_index = np.nanargmin(dist_sq_computed)
-        az_idx, rg_idx = np.unravel_index(min_flat_index, dist_sq_computed.shape)
-        min_dist = np.sqrt(dist_sq_computed[az_idx, rg_idx])
-        if max_dist_meters is not None and min_dist > max_dist_meters:
-            logger.warning(f"Nearest bin ({min_dist:.1f}m) for point ({target_lat}, {target_lon}) "
-                           f"exceeds max_dist_meters ({max_dist_meters}m). No valid indices.")
-            return None
-        return int(az_idx), int(rg_idx)
-    except ValueError:
-        logger.warning("Could not find minimum distance (all distances likely NaN).")
-        return None
-    except Exception as e:
-        logger.error(f"Error finding minimum distance index: {e}", exc_info=True)
-        return None
-
-
-def extract_point_value(ds: xr.Dataset, variable: str, az_idx: int, rg_idx: int) -> float:
-    """
-    Extracts data value for a variable at given azimuth/range indices. Assumes single time step.
-    Returns np.nan on failure.
-    """
-    try:
-        if variable not in ds.data_vars:
-            logger.warning(f"Variable '{variable}' not found in dataset for value extraction.")
-            return np.nan
-        data_point = ds[variable].isel(time=0, elevation=0, azimuth=az_idx, range=rg_idx)
-        value = data_point.compute().item() if hasattr(data_point.data, 'compute') else data_point.item()
-        if isinstance(value, (int, float, np.number)) and not np.isnan(value):
-            return float(value)
-        return np.nan
-    except IndexError:
-        logger.error(f"Indices az={az_idx}, rg={rg_idx} out of bounds for var '{variable}'.")
-        return np.nan
-    except Exception as e:
-        logger.error(f"Failed to extract value for '{variable}' at az={az_idx}, rg={rg_idx}: {e}", exc_info=True)
-        return np.nan
 
 
 # --- Orchestrator Functions ---

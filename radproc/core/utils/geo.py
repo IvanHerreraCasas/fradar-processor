@@ -1,10 +1,13 @@
 # core/utils/geo.py
-
+import numpy as np
 import xarray as xr
 import logging
 import pyproj # Import pyproj
 from typing import Tuple, Any, Optional
 import xradar
+
+from radproc.core.analysis import logger
+
 # Although xradar is used via accessor, importing helps clarity
 try:
     import rioxarray # Used to access CRS info stored by xarray-spatial/rioxarray
@@ -209,4 +212,56 @@ def transform_point_to_dataset_crs(target_lat: float, target_lon: float, ds_crs:
         return None
     except Exception as e:
         logger.error(f"Coordinate transformation failed: {e}", exc_info=True)
+        return None
+
+def find_nearest_indices(ds_geo: xr.Dataset, target_lat: float, target_lon: float, max_dist_meters: float = 200.0) -> \
+Optional[Tuple[int, int]]:
+    """
+    Finds the azimuth and range indices in the dataset closest to a target lat/lon.
+    Transforms the target coordinates, calculates distances in the projected space,
+    and finds the minimum distance indices. Checks if the minimum distance
+    is within a specified threshold.
+    Args:
+        ds_geo: Georeferenced xarray.Dataset.
+        target_lat: Target latitude (decimal degrees).
+        target_lon: Target longitude (decimal degrees).
+        max_dist_meters: Maximum allowable distance (meters) between target point
+                         and closest radar bin center. If exceeded, returns None.
+    Returns:
+        A tuple (azimuth_index, range_index) or None.
+    """
+    logger.debug(f"Finding nearest indices for Lat={target_lat}, Lon={target_lon}")
+    ds_crs = get_dataset_crs(ds_geo)
+    if ds_crs is None:
+        logger.error(f"Cannot find CRS in georeferenced dataset for point ({target_lat}, {target_lon}).")
+        return None
+    transformed_coords = transform_point_to_dataset_crs(target_lat, target_lon, ds_crs)
+    if transformed_coords is None:
+        logger.error("Coordinate transformation failed for index finding.")
+        return None
+    target_x, target_y = transformed_coords
+    if not all(coord in ds_geo.coords and ds_geo[coord].ndim == 2 for coord in ['x', 'y']):
+        logger.error("Dataset missing 2D 'x' or 'y' coordinates for index finding.")
+        return None
+    try:
+        x_coords = ds_geo['x'].data
+        y_coords = ds_geo['y'].data
+        dist_sq = (x_coords - target_x) ** 2 + (y_coords - target_y) ** 2
+        dist_sq_computed = dist_sq.compute() if hasattr(dist_sq, 'compute') else dist_sq
+        if np.all(np.isnan(dist_sq_computed)):
+            logger.warning("All calculated distances are NaN. Cannot find minimum for index.")
+            return None
+        min_flat_index = np.nanargmin(dist_sq_computed)
+        az_idx, rg_idx = np.unravel_index(min_flat_index, dist_sq_computed.shape)
+        min_dist = np.sqrt(dist_sq_computed[az_idx, rg_idx])
+        if max_dist_meters is not None and min_dist > max_dist_meters:
+            logger.warning(f"Nearest bin ({min_dist:.1f}m) for point ({target_lat}, {target_lon}) "
+                           f"exceeds max_dist_meters ({max_dist_meters}m). No valid indices.")
+            return None
+        return int(az_idx), int(rg_idx)
+    except ValueError:
+        logger.warning("Could not find minimum distance (all distances likely NaN).")
+        return None
+    except Exception as e:
+        logger.error(f"Error finding minimum distance index: {e}", exc_info=True)
         return None

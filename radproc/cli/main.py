@@ -25,7 +25,7 @@ sys.path.insert(0, str(project_root))
 # --- Import Core Functions ---
 from ..core.config import load_config, get_setting, get_all_points_config
 from ..core.file_monitor import start_monitoring
-from ..core.processor import generate_historical_plots
+from radproc.core.visualization.plotter import generate_historical_plots
 from ..core.analysis import generate_point_timeseries, calculate_accumulation
 from ..core.visualization.animator import create_animation
 from ..core.utils.upload_queue import start_worker, stop_worker
