@@ -292,6 +292,44 @@ def batch_insert_timeseries_data(conn, data_list: List[Dict[str, Any]]) -> bool:
     finally:
         if cur: cur.close()
 
+def query_timeseries_data_for_point(conn, point_id: int, variable_id: int,
+                                    start_dt: datetime, end_dt: datetime,
+                                    target_variable_name_for_df: str) -> pd.DataFrame:
+    """
+    Queries timeseries_data for a specific point/variable/range and returns a pandas DataFrame.
+    The value column in the DataFrame will be named after target_variable_name_for_df.
+    """
+    logger.debug(f"Querying timeseries data for P:{point_id}, V:{variable_id} between {start_dt} and {end_dt}")
+    sql = """
+          SELECT timestamp, value
+          FROM timeseries_data
+          WHERE point_id = %s \
+            AND variable_id = %s \
+            AND timestamp >= %s \
+            AND timestamp <= %s
+          ORDER BY timestamp; \
+          """
+    try:
+        # pd.read_sql_query handles connection and cursor management internally if conn is passed
+        df = pd.read_sql_query(sql, conn, params=(point_id, variable_id, start_dt, end_dt))
+
+        # Ensure timestamp is UTC (psycopg2 usually converts TIMESTAMPTZ to offset-aware datetimes)
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_convert('UTC')
+
+        # Rename 'value' column to the actual variable name for clarity in pandas operations
+        if 'value' in df.columns:
+            df.rename(columns={'value': target_variable_name_for_df}, inplace=True)
+
+        logger.info(f"Fetched {len(df)} rows from timeseries_data for P:{point_id}, V:{variable_id}")
+        return df
+    except psycopg2.Error as e:
+        logger.error(f"DB error querying timeseries data for P:{point_id}, V:{variable_id}: {e}", exc_info=True)
+        return pd.DataFrame(columns=['timestamp', target_variable_name_for_df])  # Return empty DF on error
+    except Exception as e:  # Catch other errors like issues with pd.read_sql_query
+        logger.error(f"Unexpected error querying timeseries data for P:{point_id}, V:{variable_id}: {e}", exc_info=True)
+        return pd.DataFrame(columns=['timestamp', target_variable_name_for_df])
+
 
 # --- Scan Log Management ---
 def add_scan_to_log(conn, filepath: str, precise_ts: datetime, elevation: float,
@@ -544,40 +582,46 @@ def get_potential_volume_members_by_time_and_seq(conn,
     return results
 
 
-def query_timeseries_data_for_point(conn, point_id: int, variable_id: int,
-                                    start_dt: datetime, end_dt: datetime,
-                                    target_variable_name_for_df: str) -> pd.DataFrame:
+
+def add_processed_file_log(conn, source_scan_id: int, filepath: str, version: str) -> Optional[int]:
     """
-    Queries timeseries_data for a specific point/variable/range and returns a pandas DataFrame.
-    The value column in the DataFrame will be named after target_variable_name_for_df.
+    Adds a record for a newly created processed/corrected file (e.g., CfRadial).
+
+    Args:
+        conn: Active database connection.
+        source_scan_id: The ID from the `radproc_scan_log` of the raw source file.
+        filepath: The full path to the newly created processed file.
+        version: The version string of the algorithm used.
+
+    Returns:
+        The new `processed_file_id` if successful, otherwise None.
     """
-    logger.debug(f"Querying timeseries data for P:{point_id}, V:{variable_id} between {start_dt} and {end_dt}")
-    sql = """
-          SELECT timestamp, value
-          FROM timeseries_data
-          WHERE point_id = %s \
-            AND variable_id = %s \
-            AND timestamp >= %s \
-            AND timestamp <= %s
-          ORDER BY timestamp; \
-          """
+    logger.debug(f"Logging processed file for source scan {source_scan_id}, version {version}.")
+    cur = None
     try:
-        # pd.read_sql_query handles connection and cursor management internally if conn is passed
-        df = pd.read_sql_query(sql, conn, params=(point_id, variable_id, start_dt, end_dt))
-
-        # Ensure timestamp is UTC (psycopg2 usually converts TIMESTAMPTZ to offset-aware datetimes)
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_convert('UTC')
-
-        # Rename 'value' column to the actual variable name for clarity in pandas operations
-        if 'value' in df.columns:
-            df.rename(columns={'value': target_variable_name_for_df}, inplace=True)
-
-        logger.info(f"Fetched {len(df)} rows from timeseries_data for P:{point_id}, V:{variable_id}")
-        return df
+        cur = conn.cursor()
+        # ON CONFLICT handles cases where we might re-run processing and try to log the same file twice.
+        sql = """
+              INSERT INTO radproc_processed_files
+              (source_scan_log_id, filepath, processing_version, processed_at)
+              VALUES (%s, %s, %s, NOW())
+              ON CONFLICT (source_scan_log_id, processing_version) DO NOTHING
+              RETURNING processed_file_id;
+              """
+        cur.execute(sql, (source_scan_id, filepath, version))
+        row = cur.fetchone()
+        conn.commit()
+        if row:
+            logger.info(f"Logged processed file {filepath} with ID {row[0]}.")
+            return row[0]
+        else:
+            logger.warning(
+                f"Processed file for source {source_scan_id}, version {version} may already exist in log."
+            )
+            return None
     except psycopg2.Error as e:
-        logger.error(f"DB error querying timeseries data for P:{point_id}, V:{variable_id}: {e}", exc_info=True)
-        return pd.DataFrame(columns=['timestamp', target_variable_name_for_df])  # Return empty DF on error
-    except Exception as e:  # Catch other errors like issues with pd.read_sql_query
-        logger.error(f"Unexpected error querying timeseries data for P:{point_id}, V:{variable_id}: {e}", exc_info=True)
-        return pd.DataFrame(columns=['timestamp', target_variable_name_for_df])
+        logger.error(f"DB error logging processed file {filepath}: {e}", exc_info=True)
+        if conn and not conn.closed: conn.rollback()
+        return None
+    finally:
+        if cur: cur.close()

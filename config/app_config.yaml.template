@@ -1,5 +1,6 @@
 input_dir: 
-output_dir: 
+output_dir:
+cfradial_dir:
 images_dir: 
 realtime_image_dir: 
 timeseries_dir:

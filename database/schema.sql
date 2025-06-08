@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS timeseries_data (
 COMMENT ON TABLE timeseries_data IS 'Stores time series data values for specific points and variables.';
 COMMENT ON COLUMN timeseries_data.timestamp IS 'Timestamp of the data reading, stored in UTC.';
 
--- Table for storing scan log data (NEW)
+-- Table for storing scan log data
 CREATE TABLE IF NOT EXISTS radproc_scan_log (
     scan_log_id SERIAL PRIMARY KEY,
     filepath VARCHAR(1024) UNIQUE NOT NULL,
@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS radproc_scan_log (
     CONSTRAINT uq_volume_scan UNIQUE (volume_identifier, scan_sequence_number, elevation)
 );
 
+
+-- Index for faster lookups on processed files
+CREATE INDEX IF NOT EXISTS idx_radproc_processed_files_source_id ON radproc_processed_files (source_scan_log_id);
+
 COMMENT ON TABLE radproc_scan_log IS 'Logs metadata for each processed radar scan file.';
 COMMENT ON COLUMN radproc_scan_log.filepath IS 'Full path to the scan file after processing/moving.';
 COMMENT ON COLUMN radproc_scan_log.precise_timestamp IS 'Canonical time extracted from within the scan data.';
@@ -84,6 +88,21 @@ COMMENT ON COLUMN radproc_scan_log.volume_identifier IS 'Timestamp of the _0 sca
 COMMENT ON COLUMN radproc_scan_log.nominal_filename_timestamp IS 'Timestamp parsed from the original filename (for reference).';
 COMMENT ON COLUMN radproc_scan_log.processed_at IS 'When this scan was added to the database.';
 
+
+-- Table for storing processed/corrected data files (e.g., CfRadial)
+CREATE TABLE IF NOT EXISTS radproc_processed_files (
+    processed_file_id SERIAL PRIMARY KEY,
+    source_scan_log_id INTEGER NOT NULL REFERENCES radproc_scan_log(scan_log_id) ON DELETE CASCADE,
+    filepath VARCHAR(1024) UNIQUE NOT NULL,
+    processing_version VARCHAR(50) NOT NULL,
+    processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    -- Ensures a raw scan cannot have two processed files of the same version
+    CONSTRAINT uq_source_version UNIQUE (source_scan_log_id, processing_version)
+);
+
+COMMENT ON TABLE radproc_processed_files IS 'Tracks processed data files (e.g., CfRadial) generated from raw scans.';
+COMMENT ON COLUMN radproc_processed_files.source_scan_log_id IS 'Foreign key linking to the original raw scan in radproc_scan_log.';
+COMMENT ON COLUMN radproc_processed_files.processing_version IS 'The version of the correction algorithm used (e.g., v1_0).';
 
 -- Create/Recreate indexes for performance
 -- Indexes for timeseries_data
@@ -103,5 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_radproc_scan_log_elevation ON radproc_scan_log (e
 CREATE INDEX IF NOT EXISTS idx_radproc_scan_log_scan_sequence_number ON radproc_scan_log (scan_sequence_number);
 CREATE INDEX IF NOT EXISTS idx_radproc_scan_log_volume_identifier ON radproc_scan_log (volume_identifier NULLS FIRST);
 
+-- Index for faster lookups on processed files
+CREATE INDEX IF NOT EXISTS idx_radproc_processed_files_source_id ON radproc_processed_files (source_scan_log_id);
 
 COMMIT;
