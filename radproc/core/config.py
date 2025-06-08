@@ -38,6 +38,7 @@ def load_config(config_dir: str = CONFIG_DIR) -> None:
         'radar': 'radar_params.yaml',
         'styles': 'plot_styles.yaml',
         'database': 'database_config.yaml',
+        'corrections': 'corrections_config.yaml'
     }
     required_configs = ['app', 'database'] # 'database' is now also essential
 

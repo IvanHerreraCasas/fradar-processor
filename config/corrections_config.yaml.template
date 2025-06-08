@@ -1,0 +1,15 @@
+# Version 1.0 of our correction algorithm
+v1_0:
+  noise_filter:
+    # Parameters for Py-ART's GateFilter or despeckle
+    texture_field: ''
+    refl_field: 'reflectivity'
+    noise_threshold:
+  attenuation:
+    # Parameters for calculate_attenuation
+    a_coef: 0.08
+    b_coef: 0.7
+  rate_estimation:
+    # Parameters for est_rain_rate_zkdp
+    z_a: 200
+    z_b: 1.6

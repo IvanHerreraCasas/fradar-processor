@@ -74,4 +74,4 @@ dependencies:
   - tqdm
   - psycopg2
   - huey
-prefix: /home/ivan/miniconda3/envs/frad-proc
+  - arm_pyart
