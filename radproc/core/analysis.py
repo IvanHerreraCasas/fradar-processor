@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from .config import get_all_points_config, get_setting, get_point_config
 from .utils.geo import georeference_dataset, find_nearest_indices
 from .utils.csv_handler import write_timeseries_csv  # Used for outputting accumulation result
-from .data import read_scan, extract_point_value  # extract_scan_key_metadata is used by processor
+from .data import read_ppi_scan, extract_point_value  # extract_scan_key_metadata is used by processor
 # Import DB Manager
 from .db_manager import (
     get_connection, release_connection, get_or_create_variable_id,
@@ -243,7 +243,7 @@ def generate_point_timeseries(
                 ds_raw = None
                 ds_geo = None
                 try:
-                    ds_raw = read_scan(scan_filepath, list(active_variables_map.keys()))
+                    ds_raw = read_ppi_scan(scan_filepath, list(active_variables_map.keys()))
                     if ds_raw is None:
                         logger.warning(f"Failed to read scan: {scan_filepath}. Skipping.")
                         overall_success = False

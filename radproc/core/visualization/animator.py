@@ -15,7 +15,7 @@ from PIL import Image, UnidentifiedImageError
 import xarray as xr
 from ..config import get_setting
 from ..utils.helpers import parse_datetime_from_filename
-from ..data import read_scan
+from ..data import read_ppi_scan
 from ..db_manager import get_connection, release_connection, query_scan_log_for_timeseries_processing
 from ..utils.geo import georeference_dataset
 from ..utils.helpers import parse_datetime_from_image_filename
@@ -87,7 +87,7 @@ def _regenerate_frame(
     try:
         # 1. Read Scan Data
         # Read only the specific variable needed for plotting
-        ds = read_scan(scan_filepath, variables=[variable])
+        ds = read_ppi_scan(scan_filepath, variables=[variable])
         if ds is None:
             logger.warning(f"Failed to read scan for frame {frame_idx}: {scan_filepath}")
             return None
@@ -154,7 +154,7 @@ def _get_scan_elevation(scan_filepath: str) -> Optional[float]:
     try:
         # Read minimal data - might still load coordinates implicitly
         # Pass a known variable likely to exist if needed, or None
-        ds = read_scan(scan_filepath, variables=None) # Try reading without specific variable request
+        ds = read_ppi_scan(scan_filepath, variables=None) # Try reading without specific variable request
         if ds is not None and 'elevation' in ds.coords:
             elevation = float(ds['elevation'].item())
             return elevation

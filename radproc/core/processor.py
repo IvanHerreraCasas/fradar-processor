@@ -11,7 +11,7 @@ import shutil
 
 # --- Core Imports ---
 from .config import get_setting, get_config
-from .data import read_scan
+from .data import read_ppi_scan
 from .utils.geo import georeference_dataset
 from .utils.helpers import move_processed_file, parse_datetime_from_filename, parse_scan_sequence_number
 from .visualization.style import get_plot_style
@@ -50,7 +50,7 @@ def _read_and_georeference_scan(filepath: str) -> Optional[Tuple[xr.Dataset, dat
     if enable_timeseries_realtime:
         vars_for_read.update(get_setting('app.timeseries_default_variables', []))
 
-    ds = read_scan(filepath, variables=list(vars_for_read) if vars_for_read else None)
+    ds = read_ppi_scan(filepath, variables=list(vars_for_read) if vars_for_read else None)
     if ds is None:
         logger.error(f"Failed to read scan file: {filepath}")
         return None

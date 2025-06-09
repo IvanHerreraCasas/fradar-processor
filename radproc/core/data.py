@@ -128,49 +128,32 @@ def _preprocess_scan(ds: xr.Dataset, azimuth_step: float) -> xr.Dataset:
 
     return ds_processed
 
-def read_scan(filepath: str, variables: Optional[List[str]] = None) -> Optional[xr.Dataset]:
+def read_ppi_scan(filepath: str, variables: Optional[List[str]] = None) -> Optional[xr.Dataset]:
     """
-    Reads a radar scan file, automatically detecting the format (Furuno .scnx.gz
-    or CfRadial2 .nc) and using the appropriate xarray engine.
+    Reads a single raw Furuno PPI scan file (.scnx.gz).
 
     Args:
-        filepath: The full path to the radar scan file.
-        variables: A list of specific variables to load. If None, loads all.
+        filepath: The full path to the raw scan file.
+        variables: A list of specific variables to load.
 
     Returns:
-        An xarray.Dataset object containing the scan data, or None on failure.
+        An xarray.Dataset object for the single sweep.
     """
     if not os.path.exists(filepath):
         logger.error(f"File not found for reading: {filepath}")
         return None
 
-    engine = None
-    if filepath.endswith(('.scnx', '.scnx.gz')):
-        engine = 'furuno'
-    elif filepath.endswith('.nc'):
-        engine = 'cfradial2'
-    else:
-        logger.error(f"Unsupported file extension for file: {filepath}")
+    if not filepath.endswith(('.scnx', '.scnx.gz')):
+        logger.error(f"Unsupported file type for read_ppi_scan: {filepath}")
         return None
 
-    logger.debug(f"Reading '{filepath}' with engine '{engine}'")
     try:
-        # The group kwarg is specific to the furuno (xradar) engine for sweep data
-        kwargs = {'group': 'sweep_0'} if engine == 'furuno' else {}
-        ds = xr.open_dataset(filepath, engine=engine, **kwargs)
-
-        # For CfRadial2, variable selection might need to be done post-load
-        if engine == 'cfradial2' and variables:
-            # Not all variables might exist in the file, so we select what's available
-            vars_to_keep = [v for v in variables if v in ds.data_vars]
-            ds = ds[vars_to_keep]
-
+        ds = xr.open_dataset(filepath, engine='furuno', group='sweep_0')
         ds = _preprocess_scan(ds)
-        logger.info(f"Successfully read and preprocessed '{os.path.basename(filepath)}'")
+        logger.info(f"Successfully read PPI scan '{os.path.basename(filepath)}'")
         return ds
-
     except Exception as e:
-        logger.error(f"Failed to read file {filepath} with engine {engine}: {e}", exc_info=True)
+        logger.error(f"Failed to read file {filepath} with engine 'furuno': {e}", exc_info=True)
         return None
 
 def extract_scan_key_metadata(scan_filepath: str) -> Optional[Tuple[datetime, float, int]]:
