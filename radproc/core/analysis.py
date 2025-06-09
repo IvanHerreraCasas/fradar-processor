@@ -12,14 +12,15 @@ from datetime import datetime, timezone
 from .config import get_all_points_config, get_setting, get_point_config
 from .utils.geo import georeference_dataset, find_nearest_indices
 from .utils.csv_handler import write_timeseries_csv  # Used for outputting accumulation result
-from .data import read_ppi_scan, extract_point_value  # extract_scan_key_metadata is used by processor
+from .data import read_ppi_scan, extract_point_value, \
+    read_volume_from_cfradial  # extract_scan_key_metadata is used by processor
 # Import DB Manager
 from .db_manager import (
     get_connection, release_connection, get_or_create_variable_id,
     batch_insert_timeseries_data, update_point_cached_indices_in_db,
     get_existing_timestamps_for_multiple_points,
     query_scan_log_for_timeseries_processing,
-    query_timeseries_data_for_point
+    query_timeseries_data_for_point, get_processed_volume_paths
 )
 
 try:
@@ -117,24 +118,104 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset,
     logger.info(f"DB timeseries update finished. Points contributing: {points_contributing_data_count}")
 
 
-def generate_point_timeseries(
+def _generate_corrected_point_timeseries(
+        point_names: List[str],
+        start_dt: datetime,
+        end_dt: datetime,
+        version: str,
+        specific_variables: Optional[List[str]],
+        interactive_mode: bool
+) -> bool:
+    """Generates timeseries data from corrected volumetric files."""
+    logger.info(f"Starting corrected timeseries generation for version '{version}'.")
+    conn = get_connection()
+    if not conn: return False
+
+    try:
+        # Get configurations for variables and points
+        variables_to_process = specific_variables or get_setting('app.timeseries_default_variables', [])
+        if not variables_to_process:
+            logger.error("No variables specified or configured for timeseries processing.")
+            return False
+
+        variable_map = {name: get_or_create_variable_id(conn, name) for name in variables_to_process}
+        all_points_map = {p['point_name']: p for p in get_all_points_config()}
+
+        points_to_process = [all_points_map[name] for name in point_names if name in all_points_map]
+
+        # Find relevant corrected volume files
+        corrected_volumes = get_processed_volume_paths(conn, start_dt, end_dt, version)
+        if not corrected_volumes:
+            logger.info(f"No corrected volumes found for version '{version}' in the given time range.")
+            return True
+
+        global_new_data_to_insert = []
+        volume_iterator = tqdm(corrected_volumes, desc=f"Corrected Volumes ({version})", unit="vol",
+                               disable=not interactive_mode)
+
+        for vol_path, vol_id in volume_iterator:
+            dtree = read_volume_from_cfradial(vol_path)
+            if not dtree: continue
+
+            for point_config in points_to_process:
+                target_elevation = point_config.get('target_elevation')
+                if target_elevation is None: continue
+
+                # Find the correct sweep in the volume datatree
+                sweep_ds = None
+                for sweep_name in dtree.children:
+                    if 'elevation' in dtree[sweep_name].ds.coords and abs(
+                            float(dtree[sweep_name].ds.elevation.item()) - target_elevation) < 0.1:
+                        sweep_ds = dtree[sweep_name].ds
+                        break
+
+                if sweep_ds:
+                    # Get or calculate indices for the point
+                    point_id = point_config['point_id']
+                    az_idx, rg_idx = point_config.get('cached_azimuth_index'), point_config.get('cached_range_index')
+                    if az_idx is None or rg_idx is None:
+                        indices = find_nearest_indices(sweep_ds, point_config['latitude'], point_config['longitude'])
+                        if indices:
+                            az_idx, rg_idx = indices
+                            update_point_cached_indices_in_db(conn, point_id, az_idx, rg_idx)
+
+                    if az_idx is not None and rg_idx is not None:
+                        for var_name, var_id in variable_map.items():
+                            if var_id:
+                                value = extract_point_value(sweep_ds, var_name, az_idx, rg_idx)
+                                if not np.isnan(value):
+                                    global_new_data_to_insert.append({
+                                        'timestamp': vol_id,
+                                        'point_id': point_id,
+                                        'variable_id': var_id,
+                                        'value': value,
+                                        'source_version': version  # Add the correction version
+                                    })
+            dtree.close()
+
+        if global_new_data_to_insert:
+            logger.info(f"Performing batch insert with {len(global_new_data_to_insert)} new corrected data points...")
+            if not batch_insert_timeseries_data(conn, global_new_data_to_insert):
+                logger.error("Final batch insert failed for corrected data.")
+                return False
+
+        return True
+    finally:
+        release_connection(conn)
+
+def _generate_raw_point_timeseries(
         point_names: List[str],
         start_dt: datetime,
         end_dt: datetime,
         specific_variables: Optional[List[str]] = None,
         interactive_mode: bool = False,
 ) -> bool:
-    """
-    Generates/updates timeseries data in PostgreSQL for a list of points.
-    Uses radproc_scan_log to find relevant scans and processes only data not
-    already present in timeseries_data.
-    MODIFIED to process scans one by one and includes a progress bar.
-    """
+    """Generates timeseries data from raw scan files."""
     if not point_names:
         logger.warning("generate_point_timeseries called with no point names.")
         return True
 
-    logger.info(f"Starting historical timeseries generation for points: {', '.join(point_names)}")
+    logger.info("Starting raw historical timeseries generation.")
     logger.info(f"Time range: {start_dt.isoformat()} to {end_dt.isoformat()}")
 
     variables_to_process: List[str]
@@ -298,7 +379,8 @@ def generate_point_timeseries(
                                         'timestamp': precise_scan_dt,
                                         'point_id': p_id,
                                         'variable_id': var_id,
-                                        'value': value
+                                        'value': value,
+                                        'source_version': 'raw'
                                     })
                                     existing_db_ts_map.setdefault((p_id, var_id), set()).add(precise_scan_dt)
                                 else:
@@ -342,6 +424,41 @@ def generate_point_timeseries(
             release_connection(conn)
 
 
+def generate_timeseries(
+        point_names: List[str],
+        start_dt: datetime,
+        end_dt: datetime,
+        source: str = 'raw',
+        version: Optional[str] = None,
+        specific_variables: Optional[List[str]] = None,
+        interactive_mode: bool = False
+) -> bool:
+    """
+    Orchestrates timeseries generation from either raw or corrected data sources.
+
+    Args:
+        point_names: List of point names to process.
+        start_dt: The start of the time range.
+        end_dt: The end of the time range.
+        source: The data source, either 'raw' or 'corrected'.
+        version: The correction version to use (required if source is 'corrected').
+        specific_variables: A list of specific variables to process.
+        interactive_mode: Enables/disables tqdm progress bars.
+
+    Returns:
+        True if the process completed successfully, False otherwise.
+    """
+    logger.info(f"--- Starting Timeseries Generation from '{source.upper()}' source ---")
+
+    if source == 'corrected':
+        if not version:
+            logger.error("A --version must be specified when using --source corrected.")
+            return False
+        return _generate_corrected_point_timeseries(point_names, start_dt, end_dt, version, specific_variables,
+                                                    interactive_mode)
+    else:  # source == 'raw'
+        return _generate_raw_point_timeseries(point_names, start_dt, end_dt, specific_variables, interactive_mode)
+
 def calculate_accumulation(
         point_name: str,
         start_dt: datetime,  # Expected to be timezone-aware UTC
@@ -365,7 +482,7 @@ def calculate_accumulation(
 
         # 1. Ensure source rate data is in the database for the specified range
         logger.info(f"Ensuring source rate data ('{rate_variable}') for point '{point_name}' is in DB...")
-        if not generate_point_timeseries(
+        if not generate_timeseries(
                 point_names=[point_name],
                 start_dt=start_dt,
                 end_dt=end_dt,

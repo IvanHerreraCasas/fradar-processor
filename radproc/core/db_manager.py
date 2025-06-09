@@ -10,6 +10,8 @@ import psycopg2.pool
 import psycopg2.extras  # For execute_values, DictCursor
 from datetime import datetime, timezone, timedelta  # Ensure timezone is imported
 
+from psycopg2 import extras
+
 from .config import get_setting
 
 logger = logging.getLogger(__name__)
@@ -265,32 +267,32 @@ def get_existing_timestamps_for_multiple_points(
     return results
 
 
-def batch_insert_timeseries_data(conn, data_list: List[Dict[str, Any]]) -> bool:
+def batch_insert_timeseries_data(conn, data_to_insert: List[Dict[str, Any]]) -> bool:
     """
-    Batch inserts timeseries data. Expects a list of dicts:
-    [{'timestamp': dt_obj, 'point_id': int, 'variable_id': int, 'value': float}, ...]
+    Performs a batch insert of timeseries data into the timeseries_data table.
+    Handles 'ON CONFLICT DO NOTHING' for the composite primary key.
+    The 'source_version' is now expected in each dictionary in the list.
     """
-    if not data_list:
-        return True  # Nothing to insert
+    if not data_to_insert:
+        return True
 
-    cur = None
+    query = """
+        INSERT INTO timeseries_data (timestamp, point_id, variable_id, value, source_version)
+        VALUES (%(timestamp)s, %(point_id)s, %(variable_id)s, %(value)s, %(source_version)s)
+        ON CONFLICT (timestamp, point_id, variable_id, source_version) DO NOTHING;
+    """
+
     try:
-        cur = conn.cursor()
-        data_tuples = [(item['timestamp'], item['point_id'], item['variable_id'], item['value']) for item in data_list]
-        insert_query = "INSERT INTO timeseries_data (timestamp, point_id, variable_id, value) VALUES %s ON CONFLICT (timestamp, point_id, variable_id) DO NOTHING;"
-        psycopg2.extras.execute_values(cur, insert_query, data_tuples, page_size=1000)
+        with conn.cursor() as cur:
+            # psycopg2's execute_batch is highly efficient for this
+            extras.execute_batch(cur, query, data_to_insert)
         conn.commit()
-        logger.info(f"DB: Batch inserted/skipped {len(data_list)} timeseries rows.")
+        logger.info(f"Batch insert executed for {len(data_to_insert)} records.")
         return True
     except psycopg2.Error as e:
-        logger.error(f"DB error during batch insert of timeseries: {e}", exc_info=True)
-        if conn and not conn.closed: conn.rollback()
+        logger.error(f"Database error during batch insert: {e}", exc_info=True)
+        conn.rollback()
         return False
-    except KeyError as e:
-        logger.error(f"Data for batch insert missing key: {e}. Sample: {data_list[0] if data_list else 'N/A'}")
-        return False
-    finally:
-        if cur: cur.close()
 
 def query_timeseries_data_for_point(conn, point_id: int, variable_id: int,
                                     start_dt: datetime, end_dt: datetime,

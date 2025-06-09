@@ -8,7 +8,7 @@ from typing import Optional
 from .huey_config import huey
 
 # Import the NEW core logic function
-from .core.analysis import generate_point_timeseries, calculate_accumulation # Make sure analysis is imported
+from .core.analysis import generate_timeseries, calculate_accumulation # Make sure analysis is imported
 from .core.visualization.animator import create_animation
 from .core.config import get_setting # Needed to get default variables if override is not used
 
@@ -40,7 +40,7 @@ def run_generate_point_timeseries(point_name: str, start_dt_iso: str, end_dt_iso
         variables_to_run = [variable_override] if variable_override else None # None means use defaults in analysis function
 
         # --- Call the Core Logic (DB version) ---
-        success = generate_point_timeseries(
+        success = generate_timeseries(
             point_names=[point_name],
             start_dt=start_dt,
             end_dt=end_dt,

@@ -24,7 +24,7 @@ sys.path.insert(0, str(project_root))
 # --- Import Core Functions ---
 from ..core.config import load_config, get_setting, get_all_points_config
 from ..core.file_monitor import start_monitoring
-from ..core.analysis import generate_point_timeseries, calculate_accumulation
+from ..core.analysis import generate_timeseries, calculate_accumulation
 from ..core.visualization.animator import create_animation
 from ..core.utils.upload_queue import start_worker, stop_worker
 from ..core.data import extract_scan_key_metadata
@@ -119,63 +119,39 @@ def cli_timeseries(args: argparse.Namespace):
     logger = logging.getLogger(__name__)
     logger.info(f"=== Starting Historical Timeseries Generation ===")
 
+    # Logic to determine which points to process (same as before)
     points_to_process_names: List[str]
-    if args.points:  # If --points was provided with one or more names
+    if args.points:
         points_to_process_names = args.points
-        logger.info(f"Point(s) specified: {', '.join(points_to_process_names)}")
-    else:  # --points was omitted or empty, process all points
-        logger.info("No specific points specified. Attempting to process all points from the database.")
-        all_points_configs = get_all_points_config()  # Fetches from DB
+    else:
+        all_points_configs = get_all_points_config()
         if not all_points_configs:
             logger.warning("No points found in the database. Nothing to process.")
             return
-        points_to_process_names = [p_conf['point_name'] for p_conf in all_points_configs if 'point_name' in p_conf]
-        if not points_to_process_names:
-            logger.warning("Fetched point configurations from DB, but no point names found. Nothing to process.")
-            return
-        logger.info(f"Processing all available points: {', '.join(points_to_process_names)}")
+        points_to_process_names = [p['point_name'] for p in all_points_configs if 'point_name' in p]
 
-    logger.info(f"Time Range: {args.start} to {args.end}")
-    if args.variable:
-        logger.info(f"Specific variable specified: {args.variable}")
-    else:
-        logger.info("Using default variable(s) as configured in 'app.timeseries_default_variables'.")
+    if not points_to_process_names:
+        logger.warning("No points determined for processing. Exiting.")
+        return
 
     dt_format = "%Y%m%d_%H%M"
     try:
-        start_dt_naive = datetime.strptime(args.start, dt_format)
-        end_dt_naive = datetime.strptime(args.end, dt_format)
-        # Ensure datetimes are UTC
-        start_dt_utc = start_dt_naive.replace(tzinfo=timezone.utc)
-        end_dt_utc = end_dt_naive.replace(tzinfo=timezone.utc)
+        start_dt_utc = datetime.strptime(args.start, dt_format).replace(tzinfo=timezone.utc)
+        end_dt_utc = datetime.strptime(args.end, dt_format).replace(tzinfo=timezone.utc)
     except ValueError:
-        logger.error(f"Invalid date format for start/end. Please use YYYYMMDD_HHMM.")
+        logger.error(f"Invalid date format. Please use YYYYMMDD_HHMM.")
         sys.exit(1)
 
-    if start_dt_utc >= end_dt_utc:
-        logger.error("Start datetime must be before end datetime.")
-        sys.exit(1)
-
-    if not points_to_process_names: # Should be caught earlier, but double-check
-        logger.info("No points determined for processing. Exiting timeseries generation.")
-        return
-
-    try:
-        success = generate_point_timeseries(
-            point_names=points_to_process_names,
-            start_dt=start_dt_utc,
-            end_dt=end_dt_utc,
-            specific_variables=[args.variable] if args.variable else None,
-            interactive_mode=True,
-        )
-        if success:
-            logger.info("Historical timeseries generation finished successfully.")
-        else:
-            logger.error("Historical timeseries generation completed with errors.")
-            # sys.exit(1) # Optional: exit with error code if generate_point_timeseries indicates failure
-    except Exception as e:
-        logger.exception("An unexpected error occurred during historical timeseries generation:")
-        sys.exit(1)
+    # Call the new orchestrator function
+    generate_timeseries(
+        point_names=points_to_process_names,
+        start_dt=start_dt_utc,
+        end_dt=end_dt_utc,
+        specific_variables=[args.variable] if args.variable else None,
+        source=args.source, # To be added when analysis functions are complete
+        version=args.version,
+        interactive_mode=True,
+    )
 
 def cli_accumulate(args: argparse.Namespace):
     """Handler for the 'accumulate' command."""
@@ -732,17 +708,27 @@ def main():
     run_parser.set_defaults(func=cli_run)
 
     # --- 'timeseries' command ---
-    timeseries_parser = subparsers.add_parser("timeseries", help="Generate historical timeseries CSV.")
+    timeseries_parser = subparsers.add_parser("timeseries", help="Generate historical timeseries data.")
     timeseries_parser.add_argument("start", help="Start datetime (YYYYMMDD_HHMM).")
     timeseries_parser.add_argument("end", help="End datetime (YYYYMMDD_HHMM).")
-    timeseries_parser.add_argument("--variable", help="Specific variable to extract.")
     timeseries_parser.add_argument(
         "--points",
-        nargs='*',  # 0 or more arguments
+        nargs='*',
         metavar="POINT_NAME",
-        default=[], # Default to an empty list if --points is not provided at all
-        help="One or more specific point names (from database) to process. "
-             "If omitted, all points defined in the database will be processed."
+        default=[],
+        help="Specific point names to process. If omitted, all points are processed."
+    )
+    timeseries_parser.add_argument("--variable", help="Specific variable to extract.")
+    timeseries_parser.add_argument(
+        "--source",
+        choices=['raw', 'corrected'],
+        default='raw',
+        help="The data source to generate timeseries from (default: raw)."
+    )
+    timeseries_parser.add_argument(
+        "--version",
+        metavar="VERSION",
+        help="The correction version to use (required for '--source corrected')."
     )
     timeseries_parser.set_defaults(func=cli_timeseries)
 
