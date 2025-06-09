@@ -81,8 +81,8 @@ def process_volume(volume_identifier: datetime, version: str = 'v1_0') -> bool:
         cfradial_filename = f"volume_{time_str}.nc"
         cfradial_filepath = os.path.join(cfradial_version_dir, cfradial_filename)
 
-        logger.info(f"Saving corrected volume to {cfradial_filepath} as CfRadial2...")
-        pyart.io.write_cfradial(cfradial_filepath, corrected_volume, format='Cf/Radial2')
+        logger.info(f"Saving corrected volume to {cfradial_filepath}")
+        pyart.io.write_cfradial(cfradial_filepath, corrected_volume)
         logger.info("Corrected volume saved successfully.")
 
         # 7. Log the new volume file to the database

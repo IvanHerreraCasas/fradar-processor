@@ -693,3 +693,47 @@ def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[str]:
     finally:
         if cur: cur.close()
     return results
+
+def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100) -> List[datetime]:
+    """
+    Finds volume_identifiers that have been grouped but have NOT yet been
+    processed for a specific version.
+
+    This query identifies all volume_identifiers present in the scan log and
+    then excludes the ones that already have an entry in the processed
+    volumes table for the given processing_version.
+
+    Args:
+        conn: Active database connection.
+        version: The processing version to check for (e.g., 'v1_0').
+        limit: The maximum number of volume identifiers to return.
+
+    Returns:
+        A list of datetime objects representing the volume identifiers to be processed.
+    """
+    # This query uses NOT EXISTS, which is an efficient way to find rows
+    # in one table that don't have a corresponding match in another.
+    query = """
+        SELECT DISTINCT s.volume_identifier
+        FROM radproc_scan_log s
+        WHERE s.volume_identifier IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM radproc_processed_volumes v
+              WHERE v.volume_identifier = s.volume_identifier
+                AND v.processing_version = %s
+          )
+        ORDER BY s.volume_identifier
+        LIMIT %s;
+    """
+    identifiers = []
+    try:
+        with conn.cursor() as cur:
+            # Note: the version is passed as a parameter twice for the query
+            cur.execute(query, (version, limit))
+            results = cur.fetchall()
+            identifiers = [row[0] for row in results]
+    except psycopg2.Error as e:
+        logger.error(f"Database error fetching unprocessed volume identifiers for version '{version}': {e}", exc_info=True)
+        return []
+    return identifiers
