@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from typing import Optional, List
-
 import matplotlib
 try:
     matplotlib.use("Agg")
@@ -25,14 +24,16 @@ sys.path.insert(0, str(project_root))
 # --- Import Core Functions ---
 from ..core.config import load_config, get_setting, get_all_points_config
 from ..core.file_monitor import start_monitoring
-from radproc.core.visualization.plotter import generate_historical_plots
 from ..core.analysis import generate_point_timeseries, calculate_accumulation
 from ..core.visualization.animator import create_animation
 from ..core.utils.upload_queue import start_worker, stop_worker
-# --- NEW Imports for index-scans ---
 from ..core.data import extract_scan_key_metadata
 from ..core.utils.helpers import parse_datetime_from_filename, move_processed_file
-from ..core.db_manager import get_connection, release_connection, add_scan_to_log, get_ungrouped_scans_for_volume_assignment, update_volume_identifier_for_scans, find_latest_scan_for_sequence
+from ..core.db_manager import get_connection, release_connection, add_scan_to_log, \
+    get_ungrouped_scans_for_volume_assignment, update_volume_identifier_for_scans, find_latest_scan_for_sequence, \
+    get_unprocessed_volume_identifiers
+from ..core import plotting_manager
+from ..core.volume_processor import process_volume
 
 try:
     from tqdm import tqdm
@@ -112,29 +113,6 @@ def cli_run(args: argparse.Namespace):
              logger.info("Exiting Monitor Mode.")
          else:
              logger.info("Exiting Monitor Mode (worker not started or failed).")
-
-
-def cli_reprocess(args: argparse.Namespace):
-    """Handler for the 'reprocess' command."""
-    logger = logging.getLogger(__name__)
-    logger.info(f"=== Starting Reprocess Mode: {args.start} -> {args.end} ===") # Use args.start/end
-    dt_format = "%Y%m%d_%H%M"
-    try:
-        start_dt = datetime.strptime(args.start, dt_format)
-        end_dt = datetime.strptime(args.end, dt_format)
-    except ValueError:
-        logger.error(f"Invalid date format. Please use YYYYMMDD_HHMM.")
-        sys.exit(1)
-    if start_dt >= end_dt:
-         logger.error("Start datetime must be before end datetime.")
-         sys.exit(1)
-    try:
-        generate_historical_plots(start_dt, end_dt)
-        logger.info("Reprocessing finished.")
-    except Exception as e:
-        logger.exception("An error occurred during reprocessing:")
-        sys.exit(1)
-
 
 def cli_timeseries(args: argparse.Namespace):
     """Handler for the 'timeseries' command."""
@@ -416,7 +394,6 @@ def cli_reorg_scans(args: argparse.Namespace):
         logger.info(f"Old YYYYMMDD directories deleted: {deleted_dir_count}")
     logger.info("Scan file reorganization finished.")
 
-# +++ CLI Handler for index-scans +++
 def cli_index_scans(args: argparse.Namespace):
     """Handler for the 'index-scans' command."""
     logger = logging.getLogger(__name__)
@@ -651,7 +628,84 @@ def cli_group_volumes(args: argparse.Namespace):
     logger.info(
         f"Note: Scans that could not find a grouped predecessor or conflicted (logged as WARNING by db_manager) "
         f"remain ungrouped and will be re-evaluated in subsequent runs if they fall within the lookback period.")
-# +++++++++++++++++++++++++++++++++++++++++++++
+
+def cli_process_volumes(args: argparse.Namespace):
+    """Handler for the 'process-volumes' command."""
+    logger = logging.getLogger(__name__)
+    logger.info("=== Starting Corrected Volume Generation ===")
+
+    if not args.version:
+        logger.error("A processing version must be specified with --version (e.g., --version v1_0).")
+        sys.exit(1)
+
+    logger.info(f"Using processing version: {args.version}")
+    logger.info(f"Processing up to {args.limit} volumes in this run.")
+
+    conn = None
+    processed_count = 0
+    error_count = 0
+
+    try:
+        conn = get_connection()
+        logger.info("Database connection established.")
+
+        # Pass the version to the database function
+        unprocessed_ids = get_unprocessed_volume_identifiers(conn, version=args.version, limit=args.limit)
+
+        if not unprocessed_ids:
+            logger.info(f"No new volumes to process for version '{args.version}' at this time.")
+            return
+
+        logger.info(f"Found {len(unprocessed_ids)} volumes to process for version '{args.version}'.")
+
+        iterator_func = tqdm if TQDM_AVAILABLE else tqdm_fallback_iterator
+        volume_iterator = iterator_func(unprocessed_ids, desc="Processing Volumes", unit="volume")
+
+        for vol_id in volume_iterator:
+            try:
+                success = process_volume(volume_identifier=vol_id, version=args.version)
+                if success:
+                    processed_count += 1
+                else:
+                    error_count += 1
+            except Exception as e:
+                logger.error(f"An unexpected error occurred while processing volume {vol_id.isoformat()}: {e}", exc_info=True)
+                error_count += 1
+
+    except Exception as e:
+        logger.exception("A critical error occurred during the volume processing workflow:")
+        error_count += 1
+    finally:
+        if conn:
+            release_connection(conn)
+            logger.info("Database connection released.")
+
+    logger.info("--- Volume Processing Summary ---")
+    logger.info(f"Successfully processed volumes: {processed_count}")
+    logger.info(f"Volumes with processing errors: {error_count}")
+    logger.info("Volume processing run finished.")
+
+def cli_plot(args: argparse.Namespace):
+    """Handler for the 'plot' command."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== Starting Historical Plot Generation ===")
+    dt_format = "%Y%m%d_%H%M"
+    try:
+        start_dt_utc = datetime.strptime(args.start, dt_format).replace(tzinfo=timezone.utc)
+        end_dt_utc = datetime.strptime(args.end, dt_format).replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.error(f"Invalid date format. Please use YYYYMMDD_HHMM.")
+        sys.exit(1)
+
+    plotting_manager.generate_plots(
+        variable=args.variable,
+        elevation=args.elevation,
+        start_dt=start_dt_utc,
+        end_dt=end_dt_utc,
+        source=args.source,
+        version=args.version,
+        plot_extent=args.extent
+    )
 
 def main():
     # 1. Load Core Configuration FIRST
@@ -676,12 +730,6 @@ def main():
     # --- 'run' command ---
     run_parser = subparsers.add_parser("run", help="Start monitoring for new scans.")
     run_parser.set_defaults(func=cli_run)
-
-    # --- 'reprocess' command ---
-    reprocess_parser = subparsers.add_parser("reprocess", help="Reprocess historical scans.")
-    reprocess_parser.add_argument("start", help="Start datetime (YYYYMMDD_HHMM).")
-    reprocess_parser.add_argument("end", help="End datetime (YYYYMMDD_HHMM).")
-    reprocess_parser.set_defaults(func=cli_reprocess)
 
     # --- 'timeseries' command ---
     timeseries_parser = subparsers.add_parser("timeseries", help="Generate historical timeseries CSV.")
@@ -778,6 +826,58 @@ def main():
         help="Simulate the grouping: show what would be updated without writing to the database."
     )
     group_volumes_parser.set_defaults(func=cli_group_volumes)
+
+    # +++ 'process-volumes' command +++
+    process_volumes_parser = subparsers.add_parser(
+        "process-volumes",
+        help="Find grouped volumes and process them into corrected CfRadial2 files.",
+        description="Scans the database for volumes that have been grouped but not yet processed.\n"
+                    "For each, it combines all raw scans, applies corrections, and saves a\n"
+                    "single volumetric CfRadial2 file, logging the result to the database."
+    )
+    process_volumes_parser.add_argument(
+        "--version",
+        required=True,
+        metavar="VERSION_STRING",
+        help="The processing version to apply and log (e.g., 'v1_0')."
+    )
+    process_volumes_parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum number of volumes to process in one run (default: 50)."
+    )
+    process_volumes_parser.set_defaults(func=cli_process_volumes)
+
+    # --- 'plot' command ---
+    plot_parser = subparsers.add_parser(
+        "plot",
+        help="Generate historical PPI plots from raw or corrected data.",
+        description="Scans the database for the specified time range and generates PPI plots for a given variable and elevation."
+    )
+    plot_parser.add_argument("variable", help="The variable to plot (e.g., DBZH).")
+    plot_parser.add_argument("elevation", type=float, help="The target elevation angle.")
+    plot_parser.add_argument("start", help="Start datetime in YYYYMMDD_HHMM format.")
+    plot_parser.add_argument("end", help="End datetime in YYYYMMDD_HHMM format.")
+    plot_parser.add_argument(
+        "--source",
+        choices=['raw', 'corrected'],
+        default='raw',
+        help="The data source to generate plots from (default: raw)."
+    )
+    plot_parser.add_argument(
+        "--version",
+        metavar="VERSION",
+        help="The correction version to use (required for '--source corrected')."
+    )
+    plot_parser.add_argument(
+        "--extent",
+        nargs=4,
+        type=float,
+        metavar=('LONMIN', 'LONMAX', 'LATMIN', 'LATMAX'),
+        help="Set a custom plot extent."
+    )
+    plot_parser.set_defaults(func=cli_plot)
 
     # 4. Parse Arguments
     args = parser.parse_args()

@@ -737,3 +737,35 @@ def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100) -> 
         logger.error(f"Database error fetching unprocessed volume identifiers for version '{version}': {e}", exc_info=True)
         return []
     return identifiers
+
+def get_processed_volume_paths(conn, start_dt: datetime, end_dt: datetime, version: str) -> List[Tuple[str, datetime]]:
+    """
+    Retrieves the filepaths and identifiers of processed volumes within a
+    specific time range and for a given processing version.
+
+    Args:
+        conn: Active database connection.
+        start_dt: The start of the time range (inclusive).
+        end_dt: The end of the time range (inclusive).
+        version: The processing version to retrieve.
+
+    Returns:
+        A list of tuples, where each tuple is (filepath, volume_identifier).
+    """
+    query = """
+        SELECT filepath, volume_identifier
+        FROM radproc_processed_volumes
+        WHERE processing_version = %s
+          AND processed_at >= %s
+          AND processed_at <= %s
+        ORDER BY processed_at;
+    """
+    records = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (version, start_dt, end_dt))
+            records = cur.fetchall()
+    except psycopg2.Error as e:
+        logger.error(f"Database error fetching processed volume paths for version '{version}': {e}", exc_info=True)
+        return []
+    return records
