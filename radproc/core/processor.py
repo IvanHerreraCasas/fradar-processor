@@ -184,58 +184,6 @@ def _handle_file_movement_and_logging(filepath: str, elevation: float, timestamp
     return moved_filepath, scan_log_id
 
 
-def _run_corrected_data_pipeline(ds_geo: xr.Dataset, scan_log_id: int, original_filename: str, timestamp: datetime) -> bool:
-    """
-    Runs the advanced preprocessing pipeline: Py-ART conversion, corrections,
-    saving to CfRadial, and logging the new file to the database.
-
-    Args:
-        ds_geo: The georeferenced xarray Dataset.
-        scan_log_id: The database ID of the source raw scan.
-        original_filename: The basename of the original raw file.
-        timestamp: The precise UTC timestamp of the scan.
-
-    Returns:
-        True if the pipeline completed successfully, False otherwise.
-    """
-    logger.info("Starting advanced preprocessing pipeline...")
-    cfradial_dir = get_setting('app.cfradial_dir')
-    if not cfradial_dir:
-        logger.error("'app.cfradial_dir' is not configured. Cannot save corrected data.")
-        return False
-
-    try:
-        # 1. Convert to Py-ART object
-        radar_obj = preprocessing.xarray_to_pyart(ds_geo)
-
-        # 2. Apply corrections using a specific version
-        correction_version = 'v1_0'  # This can be made dynamic later
-        corrected_radar = preprocessing.apply_corrections(radar_obj, version=correction_version)
-
-        # 3. Save the corrected data as a CfRadial file
-        date_str = timestamp.strftime("%Y%m%d")
-        cfradial_version_dir = os.path.join(cfradial_dir, correction_version, date_str)
-        os.makedirs(cfradial_version_dir, exist_ok=True)
-
-        base_filename, _ = os.path.splitext(os.path.splitext(original_filename)[0])
-        cfradial_filename = f"{base_filename}.nc"
-        cfradial_filepath = os.path.join(cfradial_version_dir, cfradial_filename)
-
-        pyart.io.write_cfradial(cfradial_filepath, corrected_radar)
-        logger.info(f"Successfully saved corrected CfRadial file to: {cfradial_filepath}")
-
-        # 4. Log the new CfRadial file to our new database table
-        conn = get_connection()
-        try:
-            add_processed_file_log(conn, scan_log_id, cfradial_filepath, correction_version)
-        finally:
-            release_connection(conn)
-        return True
-    except Exception as e:
-        logger.error(f"Advanced preprocessing pipeline failed: {e}", exc_info=True)
-        return False
-
-
 def _queue_files_for_upload(scan_filepath: str, saved_image_paths: Dict[str, str]):
     """
     Queues the primary scan file and any generated images for FTP upload
@@ -309,12 +257,7 @@ def process_new_scan(filepath: str, config_override: Optional[Dict[str, Any]] = 
             logger.error("Failed to move raw file or log it to the database. Aborting further processing.")
             return False # This is a critical step for linking corrected data.
 
-        # --- Stage 4: Run Advanced Corrections and Save Corrected Data ---
-        success_corrected = _run_corrected_data_pipeline(ds_geo, scan_log_id, os.path.basename(filepath), precise_ts)
-        if not success_corrected:
-            overall_success = False # Mark that this part failed, but don't stop the whole process.
-
-        # --- Stage 5: Queue files for upload ---
+        # --- Stage 4: Queue files for upload ---
         _queue_files_for_upload(moved_filepath, saved_image_paths)
 
     except Exception as e:
