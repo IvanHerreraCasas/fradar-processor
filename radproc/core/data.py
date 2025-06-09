@@ -130,44 +130,48 @@ def _preprocess_scan(ds: xr.Dataset, azimuth_step: float) -> xr.Dataset:
 
 def read_scan(filepath: str, variables: Optional[List[str]] = None) -> Optional[xr.Dataset]:
     """
-    Reads a single raw radar scan file (e.g., .scnx.gz), preprocesses it,
-    and returns it as an xarray.Dataset.
+    Reads a radar scan file, automatically detecting the format (Furuno .scnx.gz
+    or CfRadial2 .nc) and using the appropriate xarray engine.
 
     Args:
-        filepath: Path to the radar scan file.
-        variables: Optional list of variables to select. If None, attempts to load all.
+        filepath: The full path to the radar scan file.
+        variables: A list of specific variables to load. If None, loads all.
 
     Returns:
-        A preprocessed xarray.Dataset or None on error.
+        An xarray.Dataset object containing the scan data, or None on failure.
     """
     if not os.path.exists(filepath):
-        logger.error(f"File not found: {filepath}")
+        logger.error(f"File not found for reading: {filepath}")
         return None
-    azimuth_step = get_setting('radar.azimuth_step', default=0.5)
-    ds_raw = None
+
+    engine = None
+    if filepath.endswith(('.scnx', '.scnx.gz')):
+        engine = 'furuno'
+    elif filepath.endswith('.nc'):
+        engine = 'cfradial2'
+    else:
+        logger.error(f"Unsupported file extension for file: {filepath}")
+        return None
+
+    logger.debug(f"Reading '{filepath}' with engine '{engine}'")
     try:
-        ds_raw = xr.open_dataset(filepath, engine="furuno")
-        ds_processed = _preprocess_scan(ds_raw.copy(),
-                                        azimuth_step)  # Pass a copy to avoid modifying ds_raw if it's used later in finally
-        if variables:
-            essential_coords = ['time', 'elevation', 'range', 'azimuth', 'latitude', 'longitude', 'x', 'y']
-            vars_to_keep = list(set(variables + [coord for coord in essential_coords if coord in ds_processed]))
-            available_vars = [v for v in vars_to_keep if v in ds_processed]
-            if not any(v in available_vars for v in variables if v in ds_processed.data_vars):  # Check actual data vars
-                logger.error(f"None of requested data variables {variables} available in {filepath} after processing.")
-                ds_processed.close()
-                return None
-            ds_final = ds_processed[available_vars]
-        else:
-            ds_final = ds_processed
-        logger.info(f"Successfully read and preprocessed scan: {filepath}")
-        return ds_final
+        # The group kwarg is specific to the furuno (xradar) engine for sweep data
+        kwargs = {'group': 'sweep_0'} if engine == 'furuno' else {}
+        ds = xr.open_dataset(filepath, engine=engine, **kwargs)
+
+        # For CfRadial2, variable selection might need to be done post-load
+        if engine == 'cfradial2' and variables:
+            # Not all variables might exist in the file, so we select what's available
+            vars_to_keep = [v for v in variables if v in ds.data_vars]
+            ds = ds[vars_to_keep]
+
+        ds = _preprocess_scan(ds)
+        logger.info(f"Successfully read and preprocessed '{os.path.basename(filepath)}'")
+        return ds
+
     except Exception as e:
-        logger.error(f"Failed to read/preprocess {filepath}: {e}", exc_info=True)
-        if ds_processed is not None and ds_final is not ds_processed: ds_processed.close()  # type: ignore
+        logger.error(f"Failed to read file {filepath} with engine {engine}: {e}", exc_info=True)
         return None
-    finally:
-        if ds_raw is not None: ds_raw.close()
 
 def extract_scan_key_metadata(scan_filepath: str) -> Optional[Tuple[datetime, float, int]]:
     """

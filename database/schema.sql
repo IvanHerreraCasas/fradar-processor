@@ -89,20 +89,19 @@ COMMENT ON COLUMN radproc_scan_log.nominal_filename_timestamp IS 'Timestamp pars
 COMMENT ON COLUMN radproc_scan_log.processed_at IS 'When this scan was added to the database.';
 
 
--- Table for storing processed/corrected data files (e.g., CfRadial)
-CREATE TABLE IF NOT EXISTS radproc_processed_files (
-    processed_file_id SERIAL PRIMARY KEY,
-    source_scan_log_id INTEGER NOT NULL REFERENCES radproc_scan_log(scan_log_id) ON DELETE CASCADE,
+-- Create the new table for tracking processed volumes with the correct data type
+CREATE TABLE IF NOT EXISTS radproc_processed_volumes (
+    processed_volume_id SERIAL PRIMARY KEY,
+    -- This column MUST match the data type of volume_identifier in radproc_scan_log
+    volume_identifier TIMESTAMPTZ NOT NULL UNIQUE,
     filepath VARCHAR(1024) UNIQUE NOT NULL,
     processing_version VARCHAR(50) NOT NULL,
-    processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    -- Ensures a raw scan cannot have two processed files of the same version
-    CONSTRAINT uq_source_version UNIQUE (source_scan_log_id, processing_version)
+    processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
-COMMENT ON TABLE radproc_processed_files IS 'Tracks processed data files (e.g., CfRadial) generated from raw scans.';
-COMMENT ON COLUMN radproc_processed_files.source_scan_log_id IS 'Foreign key linking to the original raw scan in radproc_scan_log.';
-COMMENT ON COLUMN radproc_processed_files.processing_version IS 'The version of the correction algorithm used (e.g., v1_0).';
+COMMENT ON TABLE radproc_processed_volumes IS 'Tracks processed data volumes (e.g., CfRadial2) generated from multiple raw scans.';
+COMMENT ON COLUMN radproc_processed_volumes.volume_identifier IS 'The unique volume identifier (a timestamp), shared by all raw scans in the volume.';
+
 
 -- Create/Recreate indexes for performance
 -- Indexes for timeseries_data
@@ -122,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_radproc_scan_log_elevation ON radproc_scan_log (e
 CREATE INDEX IF NOT EXISTS idx_radproc_scan_log_scan_sequence_number ON radproc_scan_log (scan_sequence_number);
 CREATE INDEX IF NOT EXISTS idx_radproc_scan_log_volume_identifier ON radproc_scan_log (volume_identifier NULLS FIRST);
 
--- Index for faster lookups on processed files
-CREATE INDEX IF NOT EXISTS idx_radproc_processed_files_source_id ON radproc_processed_files (source_scan_log_id);
+-- Index for faster lookups on processed volumes by their volume_identifier
+CREATE INDEX IF NOT EXISTS idx_radproc_processed_volumes_volume_identifier ON radproc_processed_volumes (volume_identifier);
 
 COMMIT;

@@ -583,45 +583,83 @@ def get_potential_volume_members_by_time_and_seq(conn,
 
 
 
-def add_processed_file_log(conn, source_scan_id: int, filepath: str, version: str) -> Optional[int]:
+def add_processed_volume_log(conn, volume_identifier: datetime, filepath: str, version: str) -> Optional[int]:
     """
-    Adds a record for a newly created processed/corrected file (e.g., CfRadial).
+    Adds a record for a newly created processed volume file (e.g., CfRadial2).
 
     Args:
         conn: Active database connection.
-        source_scan_id: The ID from the `radproc_scan_log` of the raw source file.
-        filepath: The full path to the newly created processed file.
+        volume_identifier: The timestamp identifier of the volume group.
+        filepath: The full path to the newly created processed volume file.
         version: The version string of the algorithm used.
 
     Returns:
-        The new `processed_file_id` if successful, otherwise None.
+        The new `processed_volume_id` if successful, otherwise None.
     """
-    logger.debug(f"Logging processed file for source scan {source_scan_id}, version {version}.")
+    logger.debug(f"Logging processed volume for volume_identifier {volume_identifier.isoformat()}, version {version}.")
     cur = None
     try:
         cur = conn.cursor()
-        # ON CONFLICT handles cases where we might re-run processing and try to log the same file twice.
         sql = """
-              INSERT INTO radproc_processed_files
-              (source_scan_log_id, filepath, processing_version, processed_at)
-              VALUES (%s, %s, %s, NOW())
-              ON CONFLICT (source_scan_log_id, processing_version) DO NOTHING
-              RETURNING processed_file_id;
-              """
-        cur.execute(sql, (source_scan_id, filepath, version))
+            INSERT INTO radproc_processed_volumes
+            (volume_identifier, filepath, processing_version)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (volume_identifier) DO UPDATE SET
+                filepath = EXCLUDED.filepath,
+                processing_version = EXCLUDED.processing_version,
+                processed_at = NOW()
+            RETURNING processed_volume_id;
+            """
+        cur.execute(sql, (volume_identifier, filepath, version))
         row = cur.fetchone()
         conn.commit()
         if row:
-            logger.info(f"Logged processed file {filepath} with ID {row[0]}.")
+            logger.info(f"Logged processed volume {filepath} with ID {row[0]}.")
             return row[0]
-        else:
-            logger.warning(
-                f"Processed file for source {source_scan_id}, version {version} may already exist in log."
-            )
-            return None
+        return None
     except psycopg2.Error as e:
-        logger.error(f"DB error logging processed file {filepath}: {e}", exc_info=True)
+        logger.error(f"DB error logging processed volume for volume_identifier {volume_identifier.isoformat()}: {e}", exc_info=True)
         if conn and not conn.closed: conn.rollback()
         return None
     finally:
         if cur: cur.close()
+
+
+def query_unprocessed_volumes(conn, min_scans_per_volume: int = 10) -> List[datetime]:
+    """
+    Finds volume_identifiers that are complete and have not yet been processed.
+
+    Args:
+        conn: Active database connection.
+        min_scans_per_volume: The minimum number of scans required to consider a volume complete.
+
+    Returns:
+        A list of `volume_identifier` timestamps that are ready to be processed.
+    """
+    logger.info("Querying for complete, unprocessed volumes...")
+    cur = None
+    results = []
+    try:
+        cur = conn.cursor()
+        sql = """
+            WITH complete_volumes AS (
+                SELECT volume_identifier
+                FROM radproc_scan_log
+                WHERE volume_identifier IS NOT NULL
+                GROUP BY volume_identifier
+                HAVING COUNT(scan_log_id) >= %s
+            )
+            SELECT cv.volume_identifier
+            FROM complete_volumes cv
+            LEFT JOIN radproc_processed_volumes pv ON cv.volume_identifier = pv.volume_identifier
+            WHERE pv.processed_volume_id IS NULL
+            ORDER BY cv.volume_identifier;
+        """
+        cur.execute(sql, (min_scans_per_volume,))
+        results = [row[0] for row in cur.fetchall()] # row[0] will be a datetime object
+        logger.info(f"Found {len(results)} unprocessed volumes ready for processing.")
+    except psycopg2.Error as e:
+        logger.error(f"DB error querying for unprocessed volumes: {e}", exc_info=True)
+    finally:
+        if cur: cur.close()
+    return results
