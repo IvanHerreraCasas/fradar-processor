@@ -294,44 +294,30 @@ def batch_insert_timeseries_data(conn, data_to_insert: List[Dict[str, Any]]) -> 
         conn.rollback()
         return False
 
-def query_timeseries_data_for_point(conn, point_id: int, variable_id: int,
-                                    start_dt: datetime, end_dt: datetime,
-                                    target_variable_name_for_df: str) -> pd.DataFrame:
+def query_timeseries_data_for_point(conn, point_id: int, variable_id: int, start_dt: datetime, end_dt: datetime, variable_name: str, source_version: str = 'raw') -> pd.DataFrame:
     """
-    Queries timeseries_data for a specific point/variable/range and returns a pandas DataFrame.
-    The value column in the DataFrame will be named after target_variable_name_for_df.
+    Queries all timeseries data for a specific point, variable, and time range,
+    filtered by the source version.
     """
-    logger.debug(f"Querying timeseries data for P:{point_id}, V:{variable_id} between {start_dt} and {end_dt}")
-    sql = """
-          SELECT timestamp, value
-          FROM timeseries_data
-          WHERE point_id = %s \
-            AND variable_id = %s \
-            AND timestamp >= %s \
-            AND timestamp <= %s
-          ORDER BY timestamp; \
-          """
+    query = """
+        SELECT timestamp, value
+        FROM timeseries_data
+        WHERE point_id = %s
+          AND variable_id = %s
+          AND source_version = %s
+          AND timestamp >= %s
+          AND timestamp <= %s
+        ORDER BY timestamp;
+    """
     try:
-        # pd.read_sql_query handles connection and cursor management internally if conn is passed
-        df = pd.read_sql_query(sql, conn, params=(point_id, variable_id, start_dt, end_dt))
-
-        # Ensure timestamp is UTC (psycopg2 usually converts TIMESTAMPTZ to offset-aware datetimes)
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_convert('UTC')
-
-        # Rename 'value' column to the actual variable name for clarity in pandas operations
-        if 'value' in df.columns:
-            df.rename(columns={'value': target_variable_name_for_df}, inplace=True)
-
-        logger.info(f"Fetched {len(df)} rows from timeseries_data for P:{point_id}, V:{variable_id}")
-        return df
+        with conn.cursor() as cur:
+            cur.execute(query, (point_id, variable_id, source_version, start_dt, end_dt))
+            results = cur.fetchall()
+            df = pd.DataFrame(results, columns=['timestamp', variable_name])
+            return df
     except psycopg2.Error as e:
-        logger.error(f"DB error querying timeseries data for P:{point_id}, V:{variable_id}: {e}", exc_info=True)
-        return pd.DataFrame(columns=['timestamp', target_variable_name_for_df])  # Return empty DF on error
-    except Exception as e:  # Catch other errors like issues with pd.read_sql_query
-        logger.error(f"Unexpected error querying timeseries data for P:{point_id}, V:{variable_id}: {e}", exc_info=True)
-        return pd.DataFrame(columns=['timestamp', target_variable_name_for_df])
-
+        logger.error(f"Database error querying timeseries data: {e}", exc_info=True)
+        return pd.DataFrame()
 
 # --- Scan Log Management ---
 def add_scan_to_log(conn, filepath: str, precise_ts: datetime, elevation: float,

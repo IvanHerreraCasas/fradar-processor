@@ -182,7 +182,9 @@ def cli_accumulate(args: argparse.Namespace):
             end_dt=end_dt_utc,
             interval=args.interval,
             rate_variable=(args.variable or 'RATE'),
-            output_file_path=output_file
+            output_file_path=output_file,
+            source=args.source,
+            version=args.version
         )
         if success: logger.info(f"Accumulation finished. Output: {output_file}")
         else: logger.error("Accumulation failed."); sys.exit(1)
@@ -740,6 +742,18 @@ def main():
     accumulate_parser.add_argument("interval", help="Accumulation interval (e.g., '1H').")
     accumulate_parser.add_argument("--variable", default="RATE", help="Input rate variable (default: RATE).")
     accumulate_parser.add_argument("--output-file", help="Output CSV file path.")
+    accumulate_parser.add_argument(
+        "--source",
+        choices=['raw', 'corrected'],
+        default='raw',
+        help="The data source for the rate variable (default: raw)."
+    )
+    accumulate_parser.add_argument(
+        "--version",
+        metavar="VERSION",
+        help="The correction version to use (required for '--source corrected')."
+    )
+    accumulate_parser.set_defaults(func=cli_accumulate)
     accumulate_parser.set_defaults(func=cli_accumulate)
 
     # --- 'animate' command ---
