@@ -663,3 +663,33 @@ def query_unprocessed_volumes(conn, min_scans_per_volume: int = 10) -> List[date
     finally:
         if cur: cur.close()
     return results
+
+def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[str]:
+    """
+    Retrieves all raw scan filepaths for a given volume identifier.
+
+    Args:
+        conn: Active database connection.
+        volume_identifier: The timestamp identifier of the volume.
+
+    Returns:
+        A list of filepaths, ordered by their precise timestamp.
+    """
+    logger.debug(f"Querying for scan paths with volume_identifier {volume_identifier.isoformat()}")
+    cur = None
+    results = []
+    try:
+        cur = conn.cursor()
+        sql = """
+            SELECT filepath
+            FROM radproc_scan_log
+            WHERE volume_identifier = %s
+            ORDER BY precise_timestamp;
+        """
+        cur.execute(sql, (volume_identifier,))
+        results = [row[0] for row in cur.fetchall()]
+    except psycopg2.Error as e:
+        logger.error(f"DB error querying scan paths for volume: {e}", exc_info=True)
+    finally:
+        if cur: cur.close()
+    return results

@@ -12,69 +12,6 @@ from .config import get_setting
 logger = logging.getLogger(__name__)
 
 
-def xarray_to_pyart(dataset: xr.Dataset) -> pyart.Radar:
-    """
-    Converts a georeferenced xarray.Dataset from this project into a Py-ART Radar object.
-
-    This function manually maps the coordinates and data variables from the
-    xarray structure to the dictionary-based structure that Py-ART expects.
-
-    Args:
-        dataset: An xarray.Dataset produced by the `radproc.core.data.read_scan`
-                 and `radproc.core.utils.geo.georeference_dataset` functions.
-                 It must contain 'latitude', 'longitude', 'altitude', 'time',
-                 'range', and 'azimuth' coordinates.
-
-    Returns:
-        A pyart.Radar object ready for use in Py-ART's correction and retrieval functions.
-    """
-    # Initialize the Radar object by providing the core sweep and instrument parameters.
-    # Py-ART expects these as dictionaries.
-    time = {'data': np.atleast_1d(dataset['time'].values), 'units': 'seconds since 1970-01-01T00:00:00Z'}
-    _range = {'data': dataset['range'].values, 'meters': 'm', 'spacing_is_constant': 'true'}
-    latitude = {'data': np.array([dataset['latitude'].item()], dtype='float64'), 'units': 'degrees_north'}
-    longitude = {'data': np.array([dataset['longitude'].item()], dtype='float64'), 'units': 'degrees_east'}
-    altitude = {'data': np.array([dataset.get('altitude', 0).item()], dtype='float64'), 'units': 'm'} # Assuming altitude if present
-
-    # Define sweep metadata
-    sweep_number = {'data': np.array([0], dtype='int32')}
-    sweep_mode = {'data': np.array(['ppi'], dtype='S3')}
-    fixed_angle = {'data': np.array([dataset['elevation'].item()], dtype='float32'), 'units': 'degrees'}
-    sweep_start_ray_index = {'data': np.array([0], dtype='int32')}
-    sweep_end_ray_index = {'data': np.array([len(dataset['azimuth']) - 1], dtype='int32')}
-
-    # Initialize fields dictionary
-    fields = {}
-    for var_name in dataset.data_vars:
-        if dataset[var_name].ndim == 2 and 'azimuth' in dataset[var_name].dims and 'range' in dataset[var_name].dims:
-            fields[var_name] = {'data': dataset[var_name].values}
-            # Add standard metadata if available (optional but good practice)
-            if 'units' in dataset[var_name].attrs:
-                fields[var_name]['units'] = dataset[var_name].attrs['units']
-            if 'long_name' in dataset[var_name].attrs:
-                fields[var_name]['long_name'] = dataset[var_name].attrs['long_name']
-
-    # Create the Radar object
-    radar = pyart.core.Radar(
-        time,
-        _range,
-        fields,
-        {}, # metadata
-        'ppi', # scan_type
-        latitude,
-        longitude,
-        altitude,
-        sweep_number,
-        sweep_mode,
-        fixed_angle,
-        sweep_start_ray_index,
-        sweep_end_ray_index,
-        azimuth={'data': dataset['azimuth'].values, 'units': 'degrees'},
-        elevation={'data': np.full_like(dataset['azimuth'].values, dataset['elevation'].item()), 'units': 'degrees'},
-    )
-    return radar
-
-
 def apply_corrections(radar: pyart.Radar, version: str) -> pyart.Radar:
     """
     Applies a suite of corrections to a Py-ART Radar object.

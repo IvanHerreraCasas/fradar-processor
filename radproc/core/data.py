@@ -156,6 +156,32 @@ def read_ppi_scan(filepath: str, variables: Optional[List[str]] = None) -> Optio
         logger.error(f"Failed to read file {filepath} with engine 'furuno': {e}", exc_info=True)
         return None
 
+def read_volume_from_cfradial(filepath: str) -> Optional[datatree.DataTree]:
+    """
+    Reads a multi-sweep CfRadial2 volume file into a DataTree object.
+
+    Args:
+        filepath: The full path to the CfRadial2 (.nc) file.
+
+    Returns:
+        A datatree.DataTree object where each child node represents a sweep.
+    """
+    if not os.path.exists(filepath):
+        logger.error(f"CfRadial volume file not found: {filepath}")
+        return None
+    if not filepath.endswith('.nc'):
+        logger.error(f"Unsupported file type for read_volume_from_cfradial: {filepath}")
+        return None
+
+    try:
+        # Use xradar's dedicated datatree opener for CfRadial2 files
+        tree = xd.io.open_cfradial_datatree(filepath)
+        logger.info(f"Successfully read volume '{os.path.basename(filepath)}' into datatree.")
+        return tree
+    except Exception as e:
+        logger.error(f"Failed to read CfRadial2 file {filepath}: {e}", exc_info=True)
+        return None
+
 def extract_scan_key_metadata(scan_filepath: str) -> Optional[Tuple[datetime, float, int]]:
     """
     Reads a scan file to extract its precise internal timestamp (UTC),
