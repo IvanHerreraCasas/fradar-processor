@@ -12,7 +12,7 @@ from .config import get_setting
 logger = logging.getLogger(__name__)
 
 
-def apply_corrections(radar: pyart.Radar, version: str) -> pyart.Radar:
+def apply_corrections(radar: pyart.core.Radar, version: str) -> pyart.core.Radar:
     """
     Applies a suite of corrections to a Py-ART Radar object.
 
@@ -21,12 +21,12 @@ def apply_corrections(radar: pyart.Radar, version: str) -> pyart.Radar:
     with the provided version string.
 
     Args:
-        radar: A pyart.Radar object to be processed.
+        radar: A pyart.core.Radar object to be processed.
         version: A string key (e.g., 'v1_0') corresponding to a set of
                  parameters in the 'corrections_config.yaml' file.
 
     Returns:
-        The corrected pyart.Radar object.
+        The corrected pyart.core.Radar object.
     """
     logger.info(f"Applying radar corrections using parameter version: '{version}'")
 

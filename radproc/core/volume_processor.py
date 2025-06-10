@@ -3,89 +3,135 @@
 import os
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 import pyart
-from xarray.core import datatree
+import xarray as xr
+from xarray import DataTree
+
+import pandas as pd
 
 from . import preprocessing
 from .data import read_ppi_scan
 from .db_manager import get_connection, release_connection, add_processed_volume_log, get_scan_paths_for_volume
 from .config import get_setting
+from .utils.helpers import parse_scan_sequence_number
 
 logger = logging.getLogger(__name__)
 
 
-def process_volume(volume_identifier: datetime, version: str = 'v1_0') -> bool:
+def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optional[pyart.core.Radar]:
     """
-    Processes a complete volume of radar scans.
+    Takes a list of raw scan file paths, processes them into a single volume,
+    applies corrections, and returns a final Py-ART Radar object.
 
-    This is the core function of the batch processing workflow. It fetches all
-    raw PPI scan files for a given volume, combines them into a single Py-ART
-    Radar object, applies advanced corrections, saves the result as a
-    CfRadial2 file, and logs it to the database.
+    This function is self-contained and does not interact with the database,
+    making it suitable for testing in a notebook.
 
     Args:
-        volume_identifier: The timestamp identifier for the volume to process.
-        version: The correction parameter version to apply (e.g., 'v1_0').
+        scan_filepaths: An ordered list of file paths for the scans in the volume.
+        version: The processing version to apply (e.g., 'v1_0').
 
     Returns:
-        True if processing was successful, False otherwise.
+        A corrected Py-ART Radar object, or None if processing fails.
+    """
+    logger.info(f"Creating volume from {len(scan_filepaths)} files for version '{version}'.")
+
+    # 1. Read each sweep using our "volume-aware" reader
+    sweep_datasets = []
+    for path in scan_filepaths:
+        ds = read_ppi_scan(path, for_volume=True)
+        if ds:
+            # Transform sweep_number to a scalar variable
+            sweep_num = parse_scan_sequence_number(os.path.basename(path))
+            if sweep_num is not None:
+                ds['sweep_number'] = xr.DataArray(sweep_num)
+            sweep_datasets.append(ds)
+
+    if not sweep_datasets:
+        logger.error("No scans could be successfully read for this volume.")
+        return None
+
+    # 2. Manually construct the complete DataTree object
+    first_sweep = sweep_datasets[0]
+    last_sweep = sweep_datasets[-1]
+
+    root_attrs = {
+        "Conventions": "Cf/Radial", "history": f"Created by RadProc v{version}",
+        "time_coverage_start": f"{pd.to_datetime(first_sweep.time.min().values).isoformat()}Z",
+        "time_coverage_end": f"{pd.to_datetime(last_sweep.time.max().values).isoformat()}Z",
+    }
+    root_ds = xr.Dataset(
+        coords={"latitude": first_sweep.latitude, "longitude": first_sweep.longitude, "altitude": first_sweep.altitude},
+        attrs=root_attrs)
+
+    radar_params_ds = xr.Dataset(coords=root_ds.coords)
+    georef_ds = xr.Dataset(coords=root_ds.coords)
+    calib_vars = {key: first_sweep.attrs[key] for key in ['tx_power_h', 'antenna_gain_v'] if key in first_sweep.attrs}
+    radar_calib_ds = xr.Dataset(calib_vars)
+
+    tree_dict = {
+        "/": root_ds, "/radar_parameters": radar_params_ds,
+        "/georeferencing_correction": georef_ds, "/radar_calibration": radar_calib_ds,
+    }
+    for i, sweep_ds in enumerate(sweep_datasets):
+        tree_dict[f"/sweep_{i}"] = sweep_ds
+
+    volume_tree = DataTree.from_dict(tree_dict)
+
+    # 3. Convert the datatree to a Py-ART Radar object
+    logger.info("Converting datatree to Py-ART Radar object...")
+    combined_radar = volume_tree.pyart.to_radar()
+
+    # 4. Apply advanced corrections
+    logger.info(f"Applying corrections for version '{version}'...")
+    corrected_volume = preprocessing.apply_corrections(combined_radar, version=version)
+
+    return corrected_volume
+
+
+def process_volume(volume_identifier: datetime, version: str = 'v1_0') -> bool:
+    """
+    Orchestrates the processing of a complete volume of radar scans. It fetches
+    file paths from the database, calls the core processing function, saves
+    the resulting file, and logs it back to the database.
     """
     logger.info(f"--- Starting Volume Processing for ID: {volume_identifier.isoformat()} ---")
 
     conn = get_connection()
     try:
-        # 1. Get all raw file paths for this volume
+        # 1. Get file paths from the database
         scan_paths = get_scan_paths_for_volume(conn, volume_identifier)
         if not scan_paths:
             logger.error(f"No scan paths found for volume_identifier {volume_identifier.isoformat()}.")
             return False
 
-        # 2. Read each PPI into a Dataset and build a dictionary of sweeps
-        sweep_datasets = {}
-        for i, path in enumerate(scan_paths):
-            ds_sweep = read_ppi_scan(path)  # Use our specific PPI reader
-            if ds_sweep:
-                sweep_datasets[f"sweep_{i}"] = ds_sweep
-            else:
-                logger.warning(f"Failed to read scan {path}. It will be excluded from the volume.")
+        # 2. Call the core, self-contained function to get the corrected radar object
+        corrected_radar = create_volume_from_files(scan_paths, version)
 
-        if not sweep_datasets:
-            logger.error("No scans could be successfully read for this volume.")
+        if not corrected_radar:
+            logger.error(f"Core volume creation failed for volume ID {volume_identifier.isoformat()}.")
             return False
 
-        # 3. Create a DataTree from the dictionary of sweep Datasets
-        logger.info(f"Building datatree from {len(sweep_datasets)} sweeps...")
-        volume_tree = datatree.DataTree.from_dict(sweep_datasets)
-
-        # 4. Use the high-level accessor to convert the datatree to a Py-ART Radar object
-        logger.info("Converting datatree to Py-ART Radar object...")
-        combined_radar = volume_tree.pyart.to_radar()
-
-        # 5. Apply advanced corrections (this part remains the same)
-        corrected_volume = preprocessing.apply_corrections(combined_radar, version=version)
-
-        # 6. Save the corrected volume as a single CfRadial2 file
+        # 3. Save the corrected volume as a single CfRadial2 file
         cfradial_dir = get_setting('app.cfradial_dir')
         if not cfradial_dir:
-            logger.error("'app.cfradial_dir' not configured. Cannot save corrected volume.")
+            logger.error("'app.cfradial_dir' not configured.")
             return False
 
         date_str = volume_identifier.strftime("%Y%m%d")
         cfradial_version_dir = os.path.join(cfradial_dir, version, date_str)
         os.makedirs(cfradial_version_dir, exist_ok=True)
 
-        # Create a filename based on the volume identifier timestamp
         time_str = volume_identifier.strftime("%Y%m%d_%H%M%S")
         cfradial_filename = f"volume_{time_str}.nc"
         cfradial_filepath = os.path.join(cfradial_version_dir, cfradial_filename)
 
-        logger.info(f"Saving corrected volume to {cfradial_filepath}")
-        pyart.io.write_cfradial(cfradial_filepath, corrected_volume)
+        logger.info(f"Saving corrected volume to {cfradial_filepath} as CfRadial2...")
+        pyart.io.write_cfradial(cfradial_filepath, corrected_radar)
         logger.info("Corrected volume saved successfully.")
 
-        # 7. Log the new volume file to the database
+        # 4. Log the new volume file to the database
         add_processed_volume_log(conn, volume_identifier, cfradial_filepath, version)
 
     except Exception as e:

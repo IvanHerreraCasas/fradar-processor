@@ -1,6 +1,7 @@
 # core/data.py
 
 import xarray as xr
+import xradar as xd
 import numpy as np
 import os
 import logging
@@ -9,7 +10,8 @@ from datetime import datetime, timezone
 import pandas as pd
 from typing import List, Optional, Tuple
 
-from .analysis import logger
+from xarray.core import datatree
+
 from .utils.helpers import parse_datetime_from_filename  # Keep for nominal_ts
 from .config import get_setting
 from .utils.helpers import parse_scan_sequence_number
@@ -17,13 +19,13 @@ from .utils.helpers import parse_scan_sequence_number
 logger = logging.getLogger(__name__)
 
 
-def _preprocess_scan(ds: xr.Dataset, azimuth_step: float) -> xr.Dataset:
+# In radproc/core/data.py
+
+def _preprocess_scan(ds: xr.Dataset, azimuth_step: float, for_volume: bool = False) -> xr.Dataset:
     """
     Internal function to preprocess a single radar scan Dataset.
-    - Determines a single representative time for the scan.
     - Reindexes azimuth to a regular grid.
-    - Sets a single time dimension/coordinate (floored to the minute).
-    - Sets elevation dimension using 'sweep_fixed_angle'.
+    - If not for volume processing, sets a single time and elevation dimension.
 
     Args:
         ds: The input xarray Dataset from xr.open_dataset (will be copied).
@@ -34,124 +36,55 @@ def _preprocess_scan(ds: xr.Dataset, azimuth_step: float) -> xr.Dataset:
     Raises:
         ValueError: If a valid representative time cannot be determined.
     """
-    # --- Step 0: Determine the single representative timestamp for the entire scan ---
-    # This should be done BEFORE azimuth reindexing, from the original time values.
-    # We'll use the first valid (non-NaT) time value from the original dataset.
-
-    py_dt_representative = None
-    source_file_path = ds.encoding.get("source", None)
-    filename_for_logs = os.path.basename(source_file_path) if source_file_path else "unknown_file"
-
-    if 'time' in ds.coords and ds['time'].size > 0:
-        # Find the first non-NaT time in the original time array
-        original_time_values = np.atleast_1d(ds['time'].values)
-        valid_time_indices = np.where(np.isnat(original_time_values) == False)[0]
-
-        if valid_time_indices.size > 0:
-            first_valid_time_val = original_time_values[valid_time_indices[0]]
-            pd_ts = pd.Timestamp(first_valid_time_val)
-            with warnings.catch_warnings():  # Suppress nanosecond warning
-                warnings.filterwarnings("ignore", message="Discarding nonzero nanoseconds in conversion.",
-                                        category=UserWarning)
-                py_dt_representative = pd_ts.to_pydatetime()
-
-            if py_dt_representative.tzinfo is None:
-                py_dt_representative = py_dt_representative.replace(tzinfo=timezone.utc)
-            else:
-                py_dt_representative = py_dt_representative.astimezone(timezone.utc)
-            logger.debug(
-                f"Determined representative scan time for {filename_for_logs} from original data: {py_dt_representative.isoformat()}")
-        else:
-            logger.warning(f"All internal 'time' values are NaT for {filename_for_logs}.")
-    else:
-        logger.warning(f"'time' coordinate not found or empty in original data for {filename_for_logs}.")
-
-    # Fallback to filename time if representative time couldn't be found from data
-    if py_dt_representative is None and source_file_path:
-        nominal_dt_from_filename = parse_datetime_from_filename(filename_for_logs)
-        if nominal_dt_from_filename:
-            logger.info(
-                f"Using nominal timestamp from filename as representative time for {filename_for_logs}: {nominal_dt_from_filename.isoformat()}")
-            py_dt_representative = nominal_dt_from_filename
-
-    if py_dt_representative is None:
-        logger.error(f"Cannot determine a valid representative time for scan {filename_for_logs}. Cannot preprocess.")
-        raise ValueError(f"Cannot determine a valid representative time for {filename_for_logs}")
-
-    # This is the single, floored UTC time that will represent the whole scan
-    representative_time_minute_floor_utc = py_dt_representative.replace(second=0, microsecond=0)
-
-    with warnings.catch_warnings():  # Suppress np.datetime64 timezone warning
-        warnings.filterwarnings("ignore", message="no explicit representation of timezones available for np.datetime64",
-                                category=UserWarning)
-        np_representative_time_minute_floor = np.datetime64(representative_time_minute_floor_utc)
-
-    # --- Actual Dataset Modification Starts Here (use a copy) ---
     ds_processed = ds.copy()
 
-    # --- Step 1: Reindex Azimuth ---
-    if 'sweep_fixed_angle' not in ds_processed.coords and 'sweep_fixed_angle' not in ds_processed.data_vars:
-        logger.error(f"Variable 'sweep_fixed_angle' not found in {filename_for_logs}. Cannot set elevation.")
-        raise ValueError("Missing 'sweep_fixed_angle'")
-
+    # --- Step 1: Reindex Azimuth (Essential for both modes) ---
     azimuth_angles = np.arange(0, 360, azimuth_step)
-    if 'azimuth' in ds_processed.dims and ds_processed['azimuth'].ndim > 0:
-        try:
-            # Reindex. Note that ds_processed['time'] might get NaTs here if it was a dependent coord.
-            ds_processed = ds_processed.reindex(azimuth=azimuth_angles, method="nearest", tolerance=azimuth_step)
-        except ValueError as e:
-            logger.warning(f"Could not reindex azimuth for {filename_for_logs}: {e}. Skipping reindex step.")
-    else:
-        logger.warning(f"Azimuth dimension not found or is scalar in {filename_for_logs}, skipping reindexing.")
-
-    # --- Step 2: Standardize Time Dimension ---
-    # Remove the old 'time' coordinate (which might now have NaTs or be multi-valued)
-    # and replace it with the single representative time.
-    if 'time' in ds_processed.coords:
-        ds_processed = ds_processed.drop_vars("time", errors='ignore')
-    if 'time' in ds_processed.data_vars:  # Should not happen, but defensive
-        ds_processed = ds_processed.drop_vars("time", errors='ignore')
-
-    ds_processed = ds_processed.expand_dims({"time": [np_representative_time_minute_floor]})
-    ds_processed = ds_processed.set_coords("time")
-
-    # --- Step 3: Standardize Elevation Dimension ---
     try:
+        ds_processed = ds_processed.reindex(azimuth=azimuth_angles, method="nearest", tolerance=azimuth_step)
+    except Exception as e:
+        logger.warning(f"Could not reindex azimuth: {e}. Continuing without reindexing.")
+
+    # --- Step 2: Perform incompatible preprocessing only for single-scan mode ---
+    if not for_volume:
+        # For single scans, we collapse time to a single representative value.
+        # For volumes, we MUST preserve the per-azimuth time.
+        representative_time = pd.to_datetime(ds_processed.time.median().values)
+        ds_processed["time"] = representative_time.to_datetime64()
+
+        # For single scans, we promote elevation to a dimension.
+        # For volumes, this is handled by the DataTree structure.
         elevation_val = np.atleast_1d(ds_processed['sweep_fixed_angle'].values)[0]
         if 'elevation' in ds_processed.coords: ds_processed = ds_processed.drop_vars("elevation", errors='ignore')
-        if 'elevation' in ds_processed.data_vars: ds_processed = ds_processed.drop_vars("elevation", errors='ignore')
         ds_processed = ds_processed.expand_dims({"elevation": [float(elevation_val)]})
         ds_processed = ds_processed.set_coords("elevation")
-    except Exception as e:
-        logger.error(f"Error processing elevation for {filename_for_logs}: {e}. Using 0.0 fallback.")
-        ds_processed = ds_processed.expand_dims({"elevation": [0.0]}).set_coords("elevation")
 
     return ds_processed
 
-def read_ppi_scan(filepath: str, variables: Optional[List[str]] = None) -> Optional[xr.Dataset]:
+
+def read_ppi_scan(filepath: str, variables: Optional[List[str]] = None, for_volume: bool = False) -> Optional[
+    xr.Dataset]:
     """
     Reads a single raw Furuno PPI scan file (.scnx.gz).
 
     Args:
         filepath: The full path to the raw scan file.
         variables: A list of specific variables to load.
-
-    Returns:
-        An xarray.Dataset object for the single sweep.
+        for_volume: If True, skips preprocessing steps that are incompatible
+                    with multi-sweep volume creation.
     """
     if not os.path.exists(filepath):
         logger.error(f"File not found for reading: {filepath}")
         return None
 
-    if not filepath.endswith(('.scnx', '.scnx.gz')):
-        logger.error(f"Unsupported file type for read_ppi_scan: {filepath}")
-        return None
-
     try:
-        ds = xr.open_dataset(filepath, engine='furuno', group='sweep_0')
-        ds = _preprocess_scan(ds)
+        # Load the raw sweep data
+        ds = xr.open_dataset(filepath, engine='furuno', group='sweep_0', decode_times=True)
+        # Pass the for_volume flag to the preprocessor
+        ds_processed = _preprocess_scan(ds, azimuth_step=0.5, for_volume=for_volume)
+
         logger.info(f"Successfully read PPI scan '{os.path.basename(filepath)}'")
-        return ds
+        return ds_processed
     except Exception as e:
         logger.error(f"Failed to read file {filepath} with engine 'furuno': {e}", exc_info=True)
         return None
