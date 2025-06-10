@@ -5,7 +5,6 @@ import logging
 from datetime import datetime
 from typing import Optional, Tuple
 
-import psycopg2
 from ..core import db_manager, data
 from ..core.visualization import plotter, style
 from ..core.config import get_setting
@@ -94,6 +93,8 @@ def generate_plots(
     overall_success = True
     plots_generated = 0
 
+
+
     try:
         if source == 'raw':
             # --- RAW DATA WORKFLOW ---
@@ -123,7 +124,9 @@ def generate_plots(
                     for sweep_name in dtree.children:
                         sweep_ds = dtree[sweep_name].ds
                         if 'elevation' in sweep_ds.coords and abs(float(sweep_ds.elevation.item()) - elevation) < 0.1:
-                            target_sweep_node = sweep_ds
+                            azimuth_step = get_setting('radar.azimuth_step', default=0.5)
+                            target_sweep_node = data.preprocess_scan(sweep_ds, azimuth_step)
+                            target_sweep_node = geo.georeference_dataset(target_sweep_node)
                             break
 
                     if target_sweep_node:

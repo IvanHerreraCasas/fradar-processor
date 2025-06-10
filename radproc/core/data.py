@@ -21,43 +21,64 @@ logger = logging.getLogger(__name__)
 
 # In radproc/core/data.py
 
-def _preprocess_scan(ds: xr.Dataset, azimuth_step: float, for_volume: bool = False) -> xr.Dataset:
+def preprocess_scan(ds: xr.Dataset, azimuth_step: float, for_volume: bool = False) -> xr.Dataset:
     """
     Internal function to preprocess a single radar scan Dataset.
-    - Reindexes azimuth to a regular grid.
-    - If not for volume processing, sets a single time and elevation dimension.
 
-    Args:
-        ds: The input xarray Dataset from xr.open_dataset (will be copied).
-        azimuth_step: The desired regular azimuth step in degrees.
-
-    Returns:
-        The preprocessed xarray Dataset.
-    Raises:
-        ValueError: If a valid representative time cannot be determined.
+    If for_volume=False:
+        - Reindexes azimuth to a regular grid.
+        - Sets time dimension to the floored minute of the first time value.
+        - Sets elevation dimension using the first 'sweep_fixed_angle' value.
+    If for_volume=True:
+        - Only reindexes azimuth, preserving per-azimuth time and elevation.
     """
     ds_processed = ds.copy()
 
-    # --- Step 1: Reindex Azimuth (Essential for both modes) ---
+    # --- Step 1: Reindex Azimuth (Common to both modes) ---
     azimuth_angles = np.arange(0, 360, azimuth_step)
     try:
-        ds_processed = ds_processed.reindex(azimuth=azimuth_angles, method="nearest", tolerance=azimuth_step)
+        if 'azimuth' in ds_processed.dims:
+            ds_processed = ds_processed.reindex(azimuth=azimuth_angles, method="nearest", tolerance=azimuth_step)
     except Exception as e:
         logger.warning(f"Could not reindex azimuth: {e}. Continuing without reindexing.")
 
-    # --- Step 2: Perform incompatible preprocessing only for single-scan mode ---
+    # --- Step 2: Apply different logic based on the context ---
     if not for_volume:
-        # For single scans, we collapse time to a single representative value.
-        # For volumes, we MUST preserve the per-azimuth time.
-        representative_time = pd.to_datetime(ds_processed.time.median().values)
-        ds_processed["time"] = representative_time.to_datetime64()
+        # --- SINGLE-SCAN MODE: Revert to the old, robust simplification logic ---
+        logger.debug("Preprocessing for single-scan mode (collapsing coordinates).")
 
-        # For single scans, we promote elevation to a dimension.
-        # For volumes, this is handled by the DataTree structure.
-        elevation_val = np.atleast_1d(ds_processed['sweep_fixed_angle'].values)[0]
-        if 'elevation' in ds_processed.coords: ds_processed = ds_processed.drop_vars("elevation", errors='ignore')
-        ds_processed = ds_processed.expand_dims({"elevation": [float(elevation_val)]})
-        ds_processed = ds_processed.set_coords("elevation")
+        # 2a. Standardize Time Dimension (Old Logic)
+        try:
+            scan_time = ds_processed['time'].values
+            first_time_val = np.atleast_1d(scan_time)[0]
+            # Floor to the minute for simplicity and stability
+            time_minute_floor = np.datetime64(first_time_val, 'm')
+
+            if 'time' in ds_processed.coords: ds_processed = ds_processed.drop_vars("time", errors='ignore')
+            ds_processed = ds_processed.expand_dims({"time": [time_minute_floor]})
+            ds_processed = ds_processed.set_coords("time")
+        except Exception as e:
+            logger.error(f"Error processing time dimension in single-scan mode: {e}.")
+            # Fallback to now() if time processing fails
+            time_minute_floor = np.datetime64(datetime.now().replace(second=0, microsecond=0))
+            ds_processed = ds_processed.expand_dims({"time": [time_minute_floor]}).set_coords("time")
+
+        # 2b. Standardize Elevation Dimension (Old Logic)
+        try:
+            elevation_val = np.atleast_1d(ds_processed['sweep_fixed_angle'].values)[0]
+            if 'elevation' in ds_processed.coords: ds_processed = ds_processed.drop_vars("elevation", errors='ignore')
+            ds_processed = ds_processed.expand_dims({"elevation": [float(elevation_val)]})
+            ds_processed = ds_processed.set_coords("elevation")
+        except Exception as e:
+            logger.error(f"Error processing elevation dimension: {e}.")
+            ds_processed = ds_processed.expand_dims({"elevation": [0.0]}).set_coords("elevation")
+
+    else:
+        # --- VOLUME MODE: Preserve details ---
+        logger.debug("Preprocessing for volume mode (preserving coordinates).")
+        # For volume creation, we need the detailed per-azimuth time,
+        # so we do nothing to collapse it. We also leave elevation alone.
+        pass
 
     return ds_processed
 
@@ -77,11 +98,13 @@ def read_ppi_scan(filepath: str, variables: Optional[List[str]] = None, for_volu
         logger.error(f"File not found for reading: {filepath}")
         return None
 
+    azimuth_step = get_setting('radar.azimuth_step', default=0.5)
+
     try:
         # Load the raw sweep data
         ds = xr.open_dataset(filepath, engine='furuno', group='sweep_0', decode_times=True)
         # Pass the for_volume flag to the preprocessor
-        ds_processed = _preprocess_scan(ds, azimuth_step=0.5, for_volume=for_volume)
+        ds_processed = preprocess_scan(ds, azimuth_step=azimuth_step, for_volume=for_volume)
 
         logger.info(f"Successfully read PPI scan '{os.path.basename(filepath)}'")
         return ds_processed
@@ -108,7 +131,7 @@ def read_volume_from_cfradial(filepath: str) -> Optional[datatree.DataTree]:
 
     try:
         # Use xradar's dedicated datatree opener for CfRadial2 files
-        tree = xd.io.open_cfradial_datatree(filepath)
+        tree = xd.io.open_cfradial1_datatree(filepath)
         logger.info(f"Successfully read volume '{os.path.basename(filepath)}' into datatree.")
         return tree
     except Exception as e:
