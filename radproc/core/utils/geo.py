@@ -6,8 +6,6 @@ import pyproj # Import pyproj
 from typing import Tuple, Any, Optional
 import xradar
 
-from radproc.core.analysis import logger
-
 # Although xradar is used via accessor, importing helps clarity
 try:
     import rioxarray # Used to access CRS info stored by xarray-spatial/rioxarray

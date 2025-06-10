@@ -2,7 +2,6 @@
 
 import os
 import logging
-import numpy as np
 import pandas as pd
 import  xarray as xr
 from datetime import datetime, timezone
@@ -18,9 +17,7 @@ from .visualization.style import get_plot_style
 from .visualization.plotter import create_ppi_image
 from .utils.upload_queue import add_scan_to_queue, add_image_to_queue
 from .analysis import update_timeseries_for_scan
-from .db_manager import get_connection, release_connection, add_scan_to_log, add_processed_file_log
-from . import preprocessing
-import pyart
+from .db_manager import get_connection, release_connection, add_scan_to_log
 
 
 logger = logging.getLogger(__name__)

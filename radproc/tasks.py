@@ -7,10 +7,8 @@ from typing import Optional
 # Import the Huey instance defined in huey_config.py
 from .huey_config import huey
 
-# Import the NEW core logic function
 from .core.analysis import generate_timeseries, calculate_accumulation # Make sure analysis is imported
 from .core.visualization.animator import create_animation
-from .core.config import get_setting # Needed to get default variables if override is not used
 
 logger = logging.getLogger(__name__)
 
