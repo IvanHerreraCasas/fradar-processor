@@ -15,10 +15,6 @@ from cartopy.geodesic import Geodesic
 import shapely.geometry
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 
-from ..config import get_config, get_setting
-from ..db_manager import get_connection, release_connection
-from ..processor import logger, process_new_scan
-
 try:
     import pyproj  # Needed for type checking and conversion
 except ImportError:
