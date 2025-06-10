@@ -10,6 +10,7 @@ import xarray as xr
 from xarray import DataTree
 
 import pandas as pd
+import numpy as np
 
 from . import preprocessing
 from .data import read_ppi_scan
@@ -57,7 +58,7 @@ def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optiona
     last_sweep = sweep_datasets[-1]
 
     root_attrs = {
-        "Conventions": "Cf/Radial", "history": f"Created by RadProc v{version}",
+        "Conventions": "Cf/Radial", "history": f"Created by RadProc {version}",
         "time_coverage_start": f"{pd.to_datetime(first_sweep.time.min().values).isoformat()}Z",
         "time_coverage_end": f"{pd.to_datetime(last_sweep.time.max().values).isoformat()}Z",
     }
@@ -86,6 +87,48 @@ def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optiona
     # 4. Apply advanced corrections
     logger.info(f"Applying corrections for version '{version}'...")
     corrected_volume = preprocessing.apply_corrections(combined_radar, version=version)
+
+    # 5. Add missing optional attributes for writer compatibility.
+    # Scalar attributes, set to None if they don't exist
+    optional_scalar_attrs = [
+        'scan_rate', 'antenna_transition', 'altitude_agl', 'target_scan_rate'
+    ]
+    for attr in optional_scalar_attrs:
+        if not hasattr(corrected_volume, attr):
+            setattr(corrected_volume, attr, None)
+
+    # Per-sweep attributes, set to None if they don't exist
+    optional_sweep_attrs = ['rays_are_indexed', 'ray_angle_res']
+    for attr in optional_sweep_attrs:
+        if not hasattr(corrected_volume, attr):
+            setattr(corrected_volume, attr, None)
+
+    # Moving platform attributes (for fixed platforms, these are None)
+    moving_platform_attrs = [
+        'rotation', 'tilt', 'roll', 'drift', 'heading', 'pitch', 'georefs_applied'
+    ]
+    for attr in moving_platform_attrs:
+        if not hasattr(corrected_volume, attr):
+            setattr(corrected_volume, attr, None)
+
+    # Dictionary attributes, set to an empty dict if they don't exist
+    optional_dict_attrs = ['instrument_parameters', 'radar_calibration']
+    for attr in optional_dict_attrs:
+        if not hasattr(corrected_volume, attr) or getattr(corrected_volume, attr) is None:
+            # If the attribute is missing, create it from the DataTree if possible,
+            # otherwise create an empty dictionary.
+            if attr == 'radar_calibration' and 'radar_calibration' in volume_tree:
+                calib_dict = {}
+                calib_ds = volume_tree['radar_calibration'].ds
+                for var_name in calib_ds.data_vars:
+                    calib_dict[var_name] = {
+                        'data': np.array([calib_ds[var_name].item()])
+                    }
+                setattr(corrected_volume, attr, calib_dict)
+            else:
+                setattr(corrected_volume, attr, {})  # Set to empty dict as a fallback
+
+    logger.info("Radar object prepared and corrected with all optional attributes. Ready for writing.")
 
     return corrected_volume
 
