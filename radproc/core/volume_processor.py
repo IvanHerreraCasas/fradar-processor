@@ -12,7 +12,7 @@ from xarray import DataTree
 import pandas as pd
 import numpy as np
 
-from . import preprocessing
+from .retrievals import apply_corrections
 from .data import read_ppi_scan
 from .db_manager import get_connection, release_connection, add_processed_volume_log, get_scan_paths_for_volume
 from .config import get_setting
@@ -86,7 +86,7 @@ def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optiona
 
     # 4. Apply advanced corrections
     logger.info(f"Applying corrections for version '{version}'...")
-    corrected_volume = preprocessing.apply_corrections(combined_radar, version=version)
+    corrected_volume = apply_corrections(combined_radar, version=version)
 
     # 5. Add missing optional attributes for writer compatibility.
     # Scalar attributes, set to None if they don't exist
