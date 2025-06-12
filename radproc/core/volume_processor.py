@@ -3,7 +3,7 @@
 import os
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pyart
 import xarray as xr
@@ -21,10 +21,11 @@ from .utils.helpers import parse_scan_sequence_number
 logger = logging.getLogger(__name__)
 
 
-def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optional[pyart.core.Radar]:
+def create_volume_from_files(
+    scans_with_elevation: List[Tuple[str, float]],  version: str) -> Optional[pyart.core.Radar]:
     """
     Takes a list of raw scan file paths, processes them into a single volume,
-    applies corrections, and returns a final Py-ART Radar object.
+    applies corrections, applies subsetting based on the config, and returns a final Py-ART Radar object.
 
     This function is self-contained and does not interact with the database,
     making it suitable for testing in a notebook.
@@ -36,11 +37,41 @@ def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optiona
     Returns:
         A corrected Py-ART Radar object, or None if processing fails.
     """
-    logger.info(f"Creating volume from {len(scan_filepaths)} files for version '{version}'.")
+    logger.info(f"Creating volume with subsetting for version '{version}'.")
+    config = get_setting(f'corrections.{version}')
+    subset_config = config.get('subsetting', {})
+
+    # 1. Filter Scans by Elevation
+    elevations_to_keep = subset_config.get('elevations_to_keep')
+    if elevations_to_keep:
+        # Create a set for efficient lookup
+        keep_elevs = set(elevations_to_keep)
+        # Filter the list, allowing for a small tolerance
+        scan_paths = [
+            path for path, elev in scans_with_elevation
+            if any(abs(elev - keep_elev) < 0.1 for keep_elev in keep_elevs)
+        ]
+        logger.info(f"Filtered to {len(scan_paths)} sweeps based on 'elevations_to_keep' config.")
+    else:
+        # If not specified, keep all sweeps
+        scan_paths = [path for path, elev in scans_with_elevation]
+
+    if not scan_paths:
+        logger.warning("No scans remain after elevation filtering.")
+        return None
+
+    # 2. Determine Variables to Load
+    variables_to_keep = subset_config.get('variables_to_keep', [])
+    # Make sure we always load fields required for corrections (e.g., KDP, ZDR)
+    # This is a placeholder for more intelligent logic that would parse the
+    # full correction config to determine dependencies.
+    required_for_corrections = ['KDP', 'ZDR', 'DBZH']
+    variables_to_load = list(set(variables_to_keep + required_for_corrections))
+    logger.info(f"Attempting to load variables: {variables_to_load}")
 
     # 1. Read each sweep using our "volume-aware" reader
     sweep_datasets = []
-    for path in scan_filepaths:
+    for path in scan_paths:
         ds = read_ppi_scan(path, for_volume=True)
         if ds:
             # Transform sweep_number to a scalar variable
@@ -53,7 +84,7 @@ def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optiona
         logger.error("No scans could be successfully read for this volume.")
         return None
 
-    # 2. Manually construct the complete DataTree object
+    # 3. Manually construct the complete DataTree object
     first_sweep = sweep_datasets[0]
     last_sweep = sweep_datasets[-1]
 
@@ -80,15 +111,15 @@ def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optiona
 
     volume_tree = DataTree.from_dict(tree_dict)
 
-    # 3. Convert the datatree to a Py-ART Radar object
+    # 4. Convert the datatree to a Py-ART Radar object
     logger.info("Converting datatree to Py-ART Radar object...")
     combined_radar = volume_tree.pyart.to_radar()
 
-    # 4. Apply advanced corrections
+    # 5. Apply advanced corrections
     logger.info(f"Applying corrections for version '{version}'...")
     corrected_volume = apply_corrections(combined_radar, version=version)
 
-    # 5. Add missing optional attributes for writer compatibility.
+    # 6. Add missing optional attributes for writer compatibility.
     # Scalar attributes, set to None if they don't exist
     optional_scalar_attrs = [
         'scan_rate', 'antenna_transition', 'altitude_agl', 'target_scan_rate'
@@ -127,6 +158,27 @@ def create_volume_from_files(scan_filepaths: List[str], version: str) -> Optiona
                 setattr(corrected_volume, attr, calib_dict)
             else:
                 setattr(corrected_volume, attr, {})  # Set to empty dict as a fallback
+
+    # 7. Final Subsetting of Fields
+    if variables_to_keep:
+        final_fields_to_keep = set(variables_to_keep)
+        # Get a list of all current field names to iterate over
+        current_field_names = list(corrected_volume.fields.keys())
+        for field_name in current_field_names:
+            if field_name not in final_fields_to_keep:
+                corrected_volume.fields.pop(field_name)
+                logger.debug(f"Removed field not in 'variables_to_keep': {field_name}")
+
+    # --- Step 5: FINAL OPTIMIZATION - Apply Quantization ---
+
+    quantization_config =  config.get('quantization', {})
+    if quantization_config:
+        logger.info("Applying quantization to fields for file size reduction...")
+        for field_name, n_digits in quantization_config.items():
+            if field_name in corrected_volume.fields:
+                # This special key tells the netCDF4 writer to quantize the data.
+                corrected_volume.fields[field_name]['_Least_significant_digit'] = n_digits
+                logger.debug(f"Set _Least_significant_digit={n_digits} for field '{field_name}'")
 
     logger.info("Radar object prepared and corrected with all optional attributes. Ready for writing.")
 

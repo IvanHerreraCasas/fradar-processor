@@ -23,14 +23,31 @@ def correct_attenuation_kdp(radar, **params):
     refl_data = radar.fields[input_refl_field]['data']
     kdp_data = radar.fields[input_kdp_field]['data']
 
+    # Store the mask from the original reflectivity data. This tells us where
+    # there was no signal to begin with.
+    original_mask = np.ma.getmask(refl_data)
+
+
+
     spec_at_data = a_coef * (kdp_data ** b_coef)
     dr_m = radar.range['data'][1] - radar.range['data'][0]
     pia_data = 2 * cumulative_trapezoid(spec_at_data, dx=dr_m / 1000.0, axis=-1, initial=0)
 
+    # Perform the addition on the unmasked data, filling masked values with 0
+    # so that 0 + PIA = PIA in the no-signal regions.
+    corrected_data_unmasked = refl_data.filled(0.0) + pia_data
+
+    # Create a new masked array from the result, RE-APPLYING the original mask.
+    # This ensures that the original no-signal areas remain masked.
+    final_corrected_data = np.ma.array(corrected_data_unmasked, mask=original_mask)
+
     # Add the result as a new field with the explicit output name
     corrected_refl_dict = radar.fields[input_refl_field].copy()
-    corrected_refl_dict['data'] = refl_data + pia_data
+    corrected_refl_dict['data'] = final_corrected_data
     corrected_refl_dict['comment'] = 'KDP-based attenuation correction applied.'
+    # Ensure the standard _FillValue metadata exists before adding the field.
+    if '_FillValue' not in corrected_refl_dict:
+        corrected_refl_dict['_FillValue'] = pyart.config.get_fillvalue()
     radar.add_field(output_refl_field, corrected_refl_dict, replace_existing=True)
 
     radar.add_field_like(input_kdp_field, 'specific_attenuation', spec_at_data, replace_existing=True)

@@ -77,6 +77,12 @@ def estimate_rate_composite(radar, **params):
         r_z_field['data']
     )
 
+    final_mask = np.ma.getmask(refl_data)
+
+    # Where the mask is True, set the rain rate to 0.0.
+    if final_mask is not np.ma.nomask:
+        rain_rate_data[final_mask] = 0.0
+
     # 5. Add the final composite field, overwriting the original RATE field
     # Get the name of the field to overwrite from the config, defaulting to 'RATE'
     output_field_name = params.get('output_field', 'RATE')

@@ -652,16 +652,16 @@ def query_unprocessed_volumes(conn, min_scans_per_volume: int = 10) -> List[date
         if cur: cur.close()
     return results
 
-def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[str]:
+def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[Tuple[str, float]]:
     """
-    Retrieves all raw scan filepaths for a given volume identifier.
+    Retrieves all raw scan filepaths and their elevations for a given volume identifier.
 
     Args:
         conn: Active database connection.
         volume_identifier: The timestamp identifier of the volume.
 
     Returns:
-        A list of filepaths, ordered by their precise timestamp.
+        A list of tuple: filepath, elevation, ordered by their precise timestamp.
     """
     logger.debug(f"Querying for scan paths with volume_identifier {volume_identifier.isoformat()}")
     cur = None
@@ -669,10 +669,10 @@ def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[str]:
     try:
         cur = conn.cursor()
         sql = """
-            SELECT filepath
-            FROM radproc_scan_log
-            WHERE volume_identifier = %s
-            ORDER BY precise_timestamp;
+        SELECT filepath, elevation
+        FROM radproc_scan_log
+        WHERE volume_identifier = %s
+        ORDER BY scan_sequence_number;
         """
         cur.execute(sql, (volume_identifier,))
         results = [row[0] for row in cur.fetchall()]
