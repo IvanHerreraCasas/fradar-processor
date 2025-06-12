@@ -174,11 +174,20 @@ def _generate_corrected_point_timeseries(
                         break
 
                 if sweep_ds:
+
+                    sweep_ds_geo = georeference_dataset(sweep_ds)
+                    if not ('x' in sweep_ds_geo.coords and 'y' in sweep_ds_geo.coords):
+                        logger.warning(f"Georeferencing failed for {vol_path}. Skipping point extraction.")
+                        overall_success = False
+                        sweep_ds.close()
+                        if sweep_ds_geo and sweep_ds_geo is not sweep_ds: sweep_ds_geo.close()
+                        continue
+
                     # Get or calculate indices for the point
                     point_id = point_config['point_id']
                     az_idx, rg_idx = point_config.get('cached_azimuth_index'), point_config.get('cached_range_index')
                     if az_idx is None or rg_idx is None:
-                        indices = find_nearest_indices(sweep_ds, point_config['latitude'], point_config['longitude'])
+                        indices = find_nearest_indices(sweep_ds_geo, point_config['latitude'], point_config['longitude'])
                         if indices:
                             az_idx, rg_idx = indices
                             update_point_cached_indices_in_db(conn, point_id, az_idx, rg_idx)
@@ -186,7 +195,7 @@ def _generate_corrected_point_timeseries(
                     if az_idx is not None and rg_idx is not None:
                         for var_name, var_id in variable_map.items():
                             if var_id:
-                                value = extract_point_value(sweep_ds, var_name, az_idx, rg_idx)
+                                value = extract_point_value(sweep_ds_geo, var_name, az_idx, rg_idx)
                                 if not np.isnan(value):
                                     global_new_data_to_insert.append({
                                         'timestamp': vol_id,
