@@ -2,10 +2,10 @@
 import pyart
 import logging
 from radproc.core.config import get_setting
-from .despeckle import despeckle_field_pyart
 
 # Import methods from other files within this package
 from .filtering import filter_noise_gatefilter
+from .despeckle import despeckle_field_pyart, despeckle_by_azimuth_width
 from .attenuation import correct_attenuation_kdp
 from .qpe import estimate_rate_composite
 from .utils import sanitize_field
@@ -29,6 +29,8 @@ def _dispatch_despeckle_method(radar, config):
     params = config.get('params', {})
     if method == 'pyart_despeckle':
         despeckle_field_pyart(radar, **params)
+    elif method == 'azimuth_width': # Add this new case
+        despeckle_by_azimuth_width(radar, **params)
     elif method == 'none':
         logger.info("No despeckle step specified.")
     else:
