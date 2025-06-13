@@ -107,12 +107,12 @@ ECHO.
 ECHO REM Try to activate Conda environment.
 ECHO REM This assumes conda is in PATH and the shell is initialized for conda.
 ECHO CALL conda activate %CONDA_ENV_NAME%
-ECHO IF ERRORLEVEL 1 (
+ECHO IF ERRORLEVEL 1 ^(
 ECHO     ECHO Error: Failed to activate Conda environment '%CONDA_ENV_NAME%'.
 ECHO     ECHO Please activate it manually: conda activate %CONDA_ENV_NAME%
 ECHO     PAUSE
 ECHO     EXIT /B 1
-ECHO )
+ECHO ^)
 ECHO.
 ECHO REM Execute the Python module
 ECHO PUSHD "%%PROJECT_ROOT_IN_WRAPPER%%"

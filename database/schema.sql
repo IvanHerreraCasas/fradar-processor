@@ -72,13 +72,10 @@ CREATE TABLE IF NOT EXISTS radproc_scan_log (
     scan_sequence_number INTEGER NOT NULL,
     volume_identifier TIMESTAMPTZ NULL,
     nominal_filename_timestamp TIMESTAMPTZ NULL,
-    processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_volume_scan UNIQUE (volume_identifier, scan_sequence_number, elevation)
 );
 
-
--- Index for faster lookups on processed files
-CREATE INDEX IF NOT EXISTS idx_radproc_processed_files_source_id ON radproc_processed_files (source_scan_log_id);
 
 COMMENT ON TABLE radproc_scan_log IS 'Logs metadata for each processed radar scan file.';
 COMMENT ON COLUMN radproc_scan_log.filepath IS 'Full path to the scan file after processing/moving.';
