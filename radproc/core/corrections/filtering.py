@@ -1,4 +1,4 @@
-# radproc/core/retrievals/filtering.py
+# radproc/core/corrections/filtering.py
 
 import pyart
 import numpy as np

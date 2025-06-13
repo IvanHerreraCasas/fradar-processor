@@ -1,4 +1,4 @@
-# In radproc/core/retrievals/despeckle.py
+# In radproc/core/corrections/despeckle.py
 import pyart
 import numpy as np
 import logging

@@ -1,4 +1,4 @@
-# radproc/core/retrievals/qpe.py
+# radproc/core/corrections/qpe.py
 import pyart
 import numpy as np
 import logging

@@ -12,8 +12,8 @@ from xarray import DataTree
 import pandas as pd
 import numpy as np
 
-from .retrievals import apply_corrections
-from .retrievals.utils import ensure_standard_fields_metadata
+from .corrections import apply_corrections
+from .corrections.utils import ensure_standard_fields_metadata
 from .data import read_ppi_scan
 from .db_manager import get_connection, release_connection, add_processed_volume_log, get_scan_paths_for_volume
 from .config import get_setting

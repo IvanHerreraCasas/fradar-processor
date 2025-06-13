@@ -1,4 +1,4 @@
-# radproc/core/retrievals/attenuation.py
+# radproc/core/corrections/attenuation.py
 import pyart
 import numpy as np
 import logging

@@ -1,4 +1,4 @@
-# radproc/core/retrievals/__init__.py
+# radproc/core/corrections/__init__.py
 import pyart
 import logging
 from radproc.core.config import get_setting
@@ -64,9 +64,9 @@ def apply_corrections(radar: pyart.core.Radar, version: str) -> pyart.core.Radar
     """
     Applies a structured chain of corrections to a Py-ART Radar object
     based on a versioned configuration.
-    This is the main entry point for the 'retrievals' package.
+    This is the main entry point for the 'corrections' package.
     """
-    logger.info(f"--- Starting scientific retrievals for version '{version}' ---")
+    logger.info(f"--- Starting scientific corrections for version '{version}' ---")
     config = get_setting(f'corrections.{version}')
     if not config:
         logger.error(f"Configuration for version '{version}' not found. Aborting.")
@@ -109,5 +109,5 @@ def apply_corrections(radar: pyart.core.Radar, version: str) -> pyart.core.Radar
                 radar.fields.pop(field)
         logger.info(f"Cleaned up {len(temp_fields_to_remove)} temporary fields.")
 
-    logger.info("--- Finished scientific retrievals ---")
+    logger.info("--- Finished scientific corrections ---")
     return radar

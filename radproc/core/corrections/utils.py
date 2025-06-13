@@ -1,4 +1,4 @@
-# radproc/core/retrievals/utils.py
+# radproc/core/corrections/utils.py
 import numpy as np
 import logging
 
