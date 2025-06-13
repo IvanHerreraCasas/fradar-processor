@@ -675,7 +675,7 @@ def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[Tuple[s
         ORDER BY scan_sequence_number;
         """
         cur.execute(sql, (volume_identifier,))
-        results = [row[0] for row in cur.fetchall()]
+        results = [(row[0], row[1]) for row in cur.fetchall()]
     except psycopg2.Error as e:
         logger.error(f"DB error querying scan paths for volume: {e}", exc_info=True)
     finally:
