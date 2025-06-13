@@ -744,9 +744,9 @@ def get_processed_volume_paths(conn, start_dt: datetime, end_dt: datetime, versi
         SELECT filepath, volume_identifier
         FROM radproc_processed_volumes
         WHERE processing_version = %s
-          AND processed_at >= %s
-          AND processed_at <= %s
-        ORDER BY processed_at;
+          AND volume_identifier >= %s
+          AND volume_identifier <= %s
+        ORDER BY volume_identifier;
     """
     records = []
     try:
