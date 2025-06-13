@@ -13,12 +13,15 @@ import pandas as pd
 import numpy as np
 
 from .retrievals import apply_corrections
+from .retrievals.utils import ensure_standard_fields_metadata
 from .data import read_ppi_scan
 from .db_manager import get_connection, release_connection, add_processed_volume_log, get_scan_paths_for_volume
 from .config import get_setting
 from .utils.helpers import parse_scan_sequence_number
 
 logger = logging.getLogger(__name__)
+
+
 
 
 def create_volume_from_files(
@@ -65,7 +68,7 @@ def create_volume_from_files(
     # Make sure we always load fields required for corrections (e.g., KDP, ZDR)
     # This is a placeholder for more intelligent logic that would parse the
     # full correction config to determine dependencies.
-    required_for_corrections = ['KDP', 'ZDR', 'DBZH']
+    required_for_corrections = ['KDP', 'ZDR', 'DBZH', 'RHOHV']
     variables_to_load = list(set(variables_to_keep + required_for_corrections))
     logger.info(f"Attempting to load variables: {variables_to_load}")
 
@@ -114,6 +117,9 @@ def create_volume_from_files(
     # 4. Convert the datatree to a Py-ART Radar object
     logger.info("Converting datatree to Py-ART Radar object...")
     combined_radar = volume_tree.pyart.to_radar()
+
+    # Fix the metadata for all fields at the source, before any corrections.
+    ensure_standard_fields_metadata(combined_radar)
 
     # 5. Apply advanced corrections
     logger.info(f"Applying corrections for version '{version}'...")

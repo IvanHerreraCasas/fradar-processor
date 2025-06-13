@@ -45,9 +45,6 @@ def correct_attenuation_kdp(radar, **params):
     corrected_refl_dict = radar.fields[input_refl_field].copy()
     corrected_refl_dict['data'] = final_corrected_data
     corrected_refl_dict['comment'] = 'KDP-based attenuation correction applied.'
-    # Ensure the standard _FillValue metadata exists before adding the field.
-    if '_FillValue' not in corrected_refl_dict:
-        corrected_refl_dict['_FillValue'] = pyart.config.get_fillvalue()
     radar.add_field(output_refl_field, corrected_refl_dict, replace_existing=True)
 
     radar.add_field_like(input_kdp_field, 'specific_attenuation', spec_at_data, replace_existing=True)

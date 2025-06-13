@@ -2,10 +2,28 @@
 import numpy as np
 import logging
 
+import pyart
+
 logger = logging.getLogger(__name__)
 
+def ensure_standard_fields_metadata(radar):
+    """
+    Loops through all fields in a radar object and ensures standard metadata
+    keys, like '_FillValue', are present.
 
-# In radproc/core/retrievals/utils.py
+    This is a crucial step after manually creating a radar object to ensure
+    compatibility with Py-ART functions and writers.
+
+    Args:
+        radar: The Py-ART Radar object to modify in-place.
+    """
+    logger.debug("Ensuring standard metadata for all radar fields.")
+    fill_value = pyart.config.get_fillvalue()
+    for field_name in radar.fields:
+        field_dict = radar.fields[field_name]
+        if '_FillValue' not in field_dict:
+            field_dict['_FillValue'] = fill_value
+            logger.debug(f"Added missing '_FillValue' to field '{field_name}'")
 
 def sanitize_field(radar, field_name: str, fill_value: float = 0.0, lower_bound: float = None,
                    fill_data: bool = True) -> dict:

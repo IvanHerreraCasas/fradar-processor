@@ -2,6 +2,7 @@
 import pyart
 import logging
 from radproc.core.config import get_setting
+from .despeckle import despeckle_field_pyart
 
 # Import methods from other files within this package
 from .filtering import filter_noise_gatefilter
@@ -22,6 +23,16 @@ def _dispatch_noise_method(radar, config):
         logger.info("No noise filtering specified.")
     else:
         logger.warning(f"Unknown noise filter method '{method}'.")
+
+def _dispatch_despeckle_method(radar, config):
+    method = config.get('method', 'none')
+    params = config.get('params', {})
+    if method == 'pyart_despeckle':
+        despeckle_field_pyart(radar, **params)
+    elif method == 'none':
+        logger.info("No despeckle step specified.")
+    else:
+        logger.warning(f"Unknown despeckle method '{method}'.")
 
 
 def _dispatch_attenuation_method(radar, config):
@@ -61,13 +72,17 @@ def apply_corrections(radar: pyart.core.Radar, version: str) -> pyart.core.Radar
 
     temp_fields_to_remove = []
 
-    # --- STAGE 0: Sanitize all necessary fields once at the beginning ---
+    _dispatch_noise_method(radar, config.get('noise_filter', {}))
+
+    _dispatch_despeckle_method(radar, config.get('despeckle', {}))
+
+    # Sanitize all necessary fields once at the beginning ---
     if 'sanitize' in config and isinstance(config['sanitize'], list):
         for s_config in config['sanitize']:
             field_name = s_config.get('field')
             if not field_name: continue
 
-            s_params = s_config.get('params', {})
+            s_params = s_config.get('params', {}).copy()
 
             # Use the 'fill_data' parameter from the config, defaulting to True
             fill_data_flag = s_params.pop('fill_data', True)
@@ -82,9 +97,7 @@ def apply_corrections(radar: pyart.core.Radar, version: str) -> pyart.core.Radar
                 temp_fields_to_remove.append(temp_name)
                 logger.info(f"Created temporary sanitized field: '{temp_name}'")
 
-    # --- Execute the fixed workflow using sanitized fields ---
     try:
-        _dispatch_noise_method(radar, config.get('noise_filter', {}))
         _dispatch_attenuation_method(radar, config.get('attenuation', {}))
         _dispatch_rate_method(radar, config.get('rate_estimation', {}))
     finally:

@@ -3,8 +3,6 @@ import pyart
 import numpy as np
 import logging
 
-from .utils import sanitize_field
-
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +30,6 @@ def estimate_rate_composite(radar, **params):
     logger.info("Applying composite KDP-Z rain rate estimation...")
     input_refl_field = params['input_refl_field']
     input_kdp_field = params['input_kdp_field']
-    output_rate_field = params['output_rate_field']
 
     if not input_refl_field in radar.fields or not input_kdp_field in radar.fields:
         logger.error("Input fields for rate composite not found. Skipping.")
@@ -85,7 +82,7 @@ def estimate_rate_composite(radar, **params):
 
     # 5. Add the final composite field, overwriting the original RATE field
     # Get the name of the field to overwrite from the config, defaulting to 'RATE'
-    output_field_name = params.get('output_field', 'RATE')
+    output_rate_field = params['output_rate_field']
 
     final_rate_field = r_z_field.copy()
     final_rate_field['data'] = rain_rate_data
@@ -93,9 +90,9 @@ def estimate_rate_composite(radar, **params):
     final_rate_field['standard_name'] = 'rainfall_rate'
     final_rate_field['comment'] = (
         f'Composite of R(KDP) (a={kdp_a}, b={kdp_b}) and R(Z) (a={z_a}, b={z_b}). '
-        f'This field replaces the original {output_field_name} field.'
+        f'This field replaces the original {output_rate_field} field.'
     )
 
     # Use replace_existing=True to ensure the original field is overwritten
-    radar.add_field(output_field_name, final_rate_field, replace_existing=True)
-    logger.info(f"Successfully updated field '{output_field_name}' with composite rain rate.")
+    radar.add_field(output_rate_field, final_rate_field, replace_existing=True)
+    logger.info(f"Successfully updated field '{output_rate_field}' with composite rain rate.")
