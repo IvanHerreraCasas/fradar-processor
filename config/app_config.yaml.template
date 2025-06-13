@@ -1,7 +1,8 @@
 input_dir: 
 output_dir:
 cfradial_dir:
-images_dir: 
+images_dir:
+images_corrected_dir:
 realtime_image_dir: 
 timeseries_dir:
 log_file: 

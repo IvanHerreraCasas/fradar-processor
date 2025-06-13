@@ -1,15 +1,148 @@
-# Version 1.0 of our correction algorithm
-v1_0:
+# -----------------------------------------------------------------------------
+# RadProc Scientific Retrieval & Correction Configurations
+# -----------------------------------------------------------------------------
+# Each top-level key (e.g., v1_0_standard) defines a version that can be
+# passed to the `radproc process-volumes --version <version_name>` command.
+#
+# Each version has five main stages that are executed in order:
+# 1. noise_filter: Removes non-meteorological echoes.
+# 2. despeckle: Remove small echoes.
+# 3. sanitize: fill nan values.
+# 4. attenuation: Corrects reflectivity for path-integrated attenuation.
+# 5. rate_estimation: Estimates precipitation rate (QPE).
+# 6. subsetting: Extract the variables and elevations to be keeped.
+# 7. quuantization: Reduces the number of digits to reduce fill size.
+#
+# Within each stage, you specify the 'method' (the algorithm to use) and
+# the 'params' required by that algorithm. To skip a stage, set its
+# method to 'none'.
+# -----------------------------------------------------------------------------
+
+# Version 1.0: A standard, robust processing chain.
+v1_0_default:
+
   noise_filter:
-    # Parameters for Py-ART's GateFilter or despeckle
-    texture_field: ''
-    refl_field: 'reflectivity'
-    noise_threshold:
+    method: 'gatefilter'
+    params:
+      # --- GateFilter Parameters ---
+      # A list of fields that the final filter mask will be applied to.
+      apply_to_fields:
+        - 'DBZH'
+        - 'KDP'
+        #- 'VRADH'
+        #- 'ZDR'
+        - 'RATE' # Also filter the raw rate before it's overwritten
+
+      # --- Filter Condition 1: Correlation Coefficient ---
+      # Exclude gates where RhoHV is below this value.
+      rhohv_field: 'RHOHV'
+      min_rhohv: 0.8
+
+      # --- Filter Condition 2: Reflectivity Texture ---
+      # This enables the texture filter.
+      texture_field: 'DBZH'
+      max_texture: 8
+
+  despeckle:
+    #method: 'pyart_despeckle'
+    #params:
+    #  # The field to apply the despeckle algorithm to.
+    #  # Usually done on reflectivity after initial noise filtering.
+    #  field_to_despeckle: 'DBZH'
+    #  # The minimum number of connected gates to be considered a valid region.
+    #  # Regions smaller than this will be removed.
+    #  size: 15
+
+    method: 'azimuth_width'
+    params:
+      field_to_filter: 'DBZH'
+      min_azimuth_width: 30
+      # NEW: Only apply this filter to regions within 80 km of the radar.
+      max_range_km: 15
+
+  sanitize:
+    # A list of fields to sanitize before any corrections are applied
+    - field: 'DBZH'
+      params:
+        fill_data: false
+      # No extra parameters needed, will just clean NaN/inf
+    - field: 'KDP'
+      # For KDP, we want to enforce a lower bound of 0
+      params:
+        lower_bound: 0.0
+
   attenuation:
-    # Parameters for calculate_attenuation
-    a_coef: 0.08
-    b_coef: 0.7
+    method: 'kdp_based'
+    params:
+      input_refl_field: 'DBZH_sanitized'    # The reflectivity field to correct.
+      input_kdp_field: 'KDP_sanitized'     # The KDP field to use for the correction.
+      output_refl_field: 'DBZH_corrected'
+      a_coef: 0.293        # Coefficient 'a' in the A=a*KDP^b relationship.
+      b_coef: 1.101         # Exponent 'b' in the A=a*KDP^b relationship.
+
   rate_estimation:
-    # Parameters for est_rain_rate_zkdp
-    z_a: 200
-    z_b: 1.6
+    method: 'composite_kdp_z'
+    params:
+      input_refl_field: 'DBZH_corrected'        # Use the corrected reflectivity field.
+      input_kdp_field: 'KDP_sanitized'         # The KDP field.
+      output_rate_field: 'RATE'        # Overwrite the original RATE field with the result.
+
+      # Z-R relationship parameters (R = a * Z^b)
+      z_a: 0.0365
+      z_b: 0.625
+
+      # KDP-R relationship parameters (R = a * KDP^b)
+      kdp_a: 23.52
+      kdp_b: 0.815
+
+      # Thresholds for when to use the KDP-based estimation
+      z_threshold: 30.0  # Use KDP rate when corrected reflectivity is >= z_threshold
+      kdp_threshold: 0.3   # AND when KDP is >= kdp_threshold
+
+  subsetting:
+    # A list of final variables to keep. Core dependencies (KDP, ZDR etc.)
+    # for corrections will be added automatically.
+    variables_to_keep:
+      - 'DBZH'
+      - 'DBZH_corrected'
+      - 'RATE'
+      - 'KDP'
+      - 'specific_attenuation' # Keep intermediate products if desired
+
+    # A list of elevation angles (sweeps) to include in the final volume.
+    elevations_to_keep:
+      - 2.5
+
+  quantization:
+    # The value is the number of significant digits to preserve after the decimal.
+    # 1 is a good standard for reflectivity.
+    DBZH: 2
+    DBZH_corrected: 2
+    RATE: 2
+# Version 1.1: An alternative chain that skips noise filtering and uses a simpler rain rate model.
+v1_1_kdp_only_rate:
+  noise_filter:
+    method: 'gatefilter'
+    params:
+      # These are example parameters for pyart.correct.GateFilter.
+      # This method is not yet implemented in the project code.
+      refl_field: 'DBZH'
+      zdr_field: 'ZDR'
+      max_vel: 50
+      # ... other GateFilter parameters ...
+
+  attenuation:
+    method: 'kdp_based'
+    params:
+      refl_field: 'DBZH'
+      kdp_field: 'KDP'
+      a_coef: 0.08
+      b_coef: 0.95
+
+  rate_estimation:
+    method: 'kdp_only' # A different method (hypothetical, needs to be implemented).
+    params:
+      kdp_field: 'KDP'
+      output_field: 'RATE'
+      kdp_a: 40.0 # Using slightly different parameters
+      kdp_b: 0.800
