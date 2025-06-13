@@ -1,57 +1,52 @@
-# RadProc: Radar Data Processor & API (PostgreSQL Edition)
+# RadProc: Radar Data Processor & API
 
-**RadProc** is a Python application designed for processing, visualizing, and managing radar scan data, specifically targeting Furuno radar `.scnx.gz` files. It offers both a Command Line Interface (CLI) for batch processing and monitoring, and a FastAPI web API for real-time data access and background job management.
+**RadProc** is a Python application designed for processing, visualizing, and managing weather radar data, specifically targeting Furuno `.scnx.gz` files. It offers a Command Line Interface (CLI) for a complete, multi-stage batch processing pipeline and a FastAPI web API for real-time data access.
 
-This version features a robust **PostgreSQL backend** for storing scan metadata, points of interest, and extracted time series data, moving away from previous file-based or YAML-based configurations for these core entities.
+The core of RadProc is a robust workflow that ingests raw radar scans, applies a chain of versioned scientific corrections, and produces high-quality, analysis-ready volumetric data products in CfRadial2 format, all orchestrated through a **PostgreSQL database** and YAML configuration files.
 
 ## Key Features
 
-* **Automated Monitoring (CLI):** Watches a specified input directory for new `.scnx.gz` scan files via `radproc run`.
-* **Core Processing:** Reads (`xarray`, `xradar`), preprocesses, and georeferences (`pyproj`) radar data.
+* **Three-Stage Batch Processing Pipeline:**
+    1.  **Ingest (`radproc run`):** Automated monitoring of an input directory for new raw `.scnx.gz` scan files.
+    2.  **Group (`radproc group-volumes`):** Analyzes the database to logically group individual scans into complete volumetric sweeps.
+    3.  **Process (`radproc process-volumes`):** Creates corrected, volumetric CfRadial2 NetCDF files from the grouped scans.
+* **Configurable Scientific Correction Engine:**
+    *  `radproc/core/corrections` package applies a chain of scientific algorithms to the volumetric data.
+    * The entire correction process is version-controlled and defined in `config/corrections.yaml`.
+    * **Noise & Clutter Filtering:** Removes non-meteorological echoes using configurable methods like Correlation Coefficient (`RhoHV`), texture of reflectivity, and area-based or radial-based despeckling.
+    * **Attenuation Correction:** Corrects reflectivity data for path-integrated attenuation using KDP-based methods.
+    * **Quantitative Precipitation Estimation (QPE):** Derives rainfall rate from radar variables using configurable algorithms like composite Z-R and KDP-R relationships.
+* **Volumetric Data Creation:** Combines multiple single-elevation scans into a single, multi-sweep `pyart.Radar` object for holistic processing.
+* **Data Subsetting & Quantization:**
+    * Reduces final file size by allowing the user to specify which variables and elevation angles to keep.
+    * Uses quantization to store floating-point data as scaled integers, dramatically improving compression without losing significant scientific precision.
 * **PostgreSQL Database Backend:**
-    * Logs all processed scans, including their metadata (filepath, precise timestamp, elevation, sequence number), into the `radproc_scan_log` table.
-    * Stores definitions for points of interest (`radproc_points`) and radar variables (`radproc_variables`).
-    * Manages extracted time series data in the `timeseries_data` table.
-* **Volume Grouping:** The `radproc group-volumes` command analyzes the `radproc_scan_log` to assign a common `volume_identifier` to scans belonging to the same volumetric sweep.
-* **Visualization:** Generates configurable PPI plot images (`matplotlib`, `cartopy`) for specified radar variables. Saves plots historically and updates a "realtime" image for API access.
-* **Time Series Extraction & Management:**
-    * Extracts time series data for specified variables at user-defined points (now managed in the database).
-    * Stores time series directly in the PostgreSQL database.
-    * `radproc timeseries` CLI command for historical generation, supporting specific or all database-defined points.
-    * Optimized for memory efficiency during batch processing.
-* **Precipitation Accumulation:** Calculates accumulated precipitation over user-defined intervals from rate time series (sourced from the database) via `radproc accumulate` or an API job, outputting to CSV.
-* **Animation:** Creates animations (GIF/MP4) from generated plot images (`radproc animate` or via API job). Uses `imageio` and sources scan information from the database.
-* **FTP Upload (Optional):** Uploads original scan files and/or generated images to FTP servers via a persistent SQLite-based queue with retries. Managed by `radproc run`.
-* **FastAPI Web API:**
-    * Provides HTTP endpoints to access status, configured points (from DB), latest ("realtime") plots, and specific historical plots.
-    * Offers a Server-Sent Events (SSE) stream (`/plots/stream/updates`) for real-time notification of plot updates.
-    * Allows submitting background jobs (timeseries generation, accumulation, animation) via a task queue (`Huey` with SQLite backend).
-    * Provides endpoints to check job status and retrieve results/data (timeseries data from DB, other files from disk).
-* **Background Task Queue:** Uses `Huey` with an SQLite backend (`huey_queue.db`) for handling asynchronous API tasks. Requires a separate `huey_consumer` process.
-* **Configuration Driven:** Core behavior (paths, FTP, plot styles, API settings, queue paths) is controlled via external YAML files (`config/`). Point definitions are now primarily managed in the database.
-* **Setup Scripts:** Provides scripts for setting up the PostgreSQL database/user/schema on Linux and separate scripts for setting up the Conda application environment on Linux and Windows.
+    * Logs all processed scans and their metadata in the `radproc_scan_log` table.
+    * Tracks the creation of corrected volumetric files in the `radproc_processed_volumes` table.
+    * Manages definitions for points of interest, variables, and extracted time series data.
+* **Advanced Visualization (`radproc plot`):**
+    * Generates configurable PPI plot images (`matplotlib`, `cartopy`) from either the **raw** source data or the final **corrected** data, allowing for direct comparison.
+* **Advanced Time Series & Accumulation (`radproc timeseries`, `radproc accumulate`):**
+    * Extracts and analyzes time series data from either the raw or final corrected data products.
+* **FastAPI Web API:** Provides HTTP endpoints for status, data access, and background job management.
+* **Configuration Driven:** Core behavior is controlled via external YAML files, including the new `corrections.yaml` for defining scientific processing chains.
 
 ## Project Structure Highlights
 
-* `radproc/core/`: Core backend logic (I/O, processing, plotting, DB interaction, analysis, animation).
+* `radproc/core/`: Core backend logic (I/O, processing, plotting, DB interaction, analysis).
+* **`radproc/core/corrections/`**: The new scientific processing package.
+    * `__init__.py`: The main `apply_corrections` orchestrator.
+    * `filtering.py`, `despeckle.py`, `attenuation.py`, `qpe.py`: Modules containing specific algorithms.
 * `radproc/cli/`: Command-line interface (`radproc` command).
-* **`radproc/api/`**: FastAPI application code.
-* **`radproc/huey_config.py` & `radproc/tasks.py`**: Huey task queue setup and task definitions.
-* `database/schema.sql`: PostgreSQL database schema definition.
+* `radproc/api/`: FastAPI application code.
 * `config/`: Holds YAML configuration files.
-    * `app_config.yaml`: Paths, logging, general behavior (includes `volume_grouping.max_inter_scan_gap_minutes`).
-    * `database_config.yaml`: PostgreSQL connection parameters (excluding password).
-    * `ftp_config.yaml`: FTP servers, modes, SQLite queue settings.
-    * `radar_params.yaml`: Radar hardware info.
+    * `app_config.yaml`: General behavior, paths, logging.
+    * `database_config.yaml`: PostgreSQL connection details.
+    * **`corrections.yaml`**: **New!** Defines versioned scientific processing chains.
     * `plot_styles.yaml`: Plotting appearance.
-    * `points.yaml`: **Deprecated for runtime use.** May be used for initial migration to the database. Points are now managed in the `radproc_points` table.
-* `scripts/`:
-    * `setup_postgres_linux.sh`: Sets up PostgreSQL database, user, and applies `schema.sql` on Linux.
-    * `apply_schema_windows.bat`: Applies `schema.sql` to an existing PostgreSQL database on Windows.
-    * `setup_linux.sh` / `setup_windows.bat`: Set up the Conda Python environment for RadProc.
-* `data/`: Default location for persistent SQLite queues (FTP `upload_queue.db`, Huey `huey_queue.db`).
-* `environment.yml`: Conda environment definition file.
-
+    * `points.yaml`: Deprecated. Point definitions are now in the `radproc_points` database table.
+* `database/schema.sql`: PostgreSQL database schema definition.
+* `environment.yml`: Conda environment definition.
 ## Configuration
 
 RadProc relies on YAML configuration files in `config/`.
@@ -60,6 +55,7 @@ RadProc relies on YAML configuration files in `config/`.
 * **`database_config.yaml`**: PostgreSQL connection details (host, port, dbname, user). **Password must be set via `RADPROC_DB_PASSWORD` environment variable.**
 * **`ftp_config.yaml`**: FTP server details. **Passwords must be set via `FTP_PASSWORD_<ALIAS_UPPERCASE>` environment variables.**
 * **`points.yaml`**: Now primarily for potential one-time migration into the database. Points of interest are stored in the `radproc_points` PostgreSQL table.
+* * **`corrections.yaml`**: It defines versioned workflows for scientific processing. Each version specifies the methods and parameters for `noise_filter`, `despeckle`, `attenuation`, `rate_estimation`, `subsetting`, and `quantization`.
 
 **Important: Secure Password Handling**
 
@@ -102,9 +98,24 @@ The setup process is now two-staged: Database Setup, then Application Environmen
 
 ## Usage
 
-### Command Line Interface (CLI)
+### Standard Operating Workflow (CLI)
 
-Activate the Conda environment (`conda activate frad-proc` or the name in your `environment.yml`) or use the wrapper scripts (`frad-proc`, `frad-proc.bat`) potentially added to your PATH.
+The application is designed to be run as a sequence of commands, which can be automated with a scheduler like `cron`.
+
+1.  **Run Continuously:** The `run` command should be active 24/7 to ingest new raw files.
+    ```bash
+    radproc run
+    ```
+2.  **Run Periodically (e.g., every 2 minutes):** The `group-volumes` command groups the newly ingested scans.
+    ```bash
+    radproc group-volumes
+    ```
+3.  **Run Periodically (e.g., every 5 minutes):** The `process-volumes` command finds grouped volumes and creates the final corrected data products, applying a specific version of the correction algorithms.
+    ```bash
+    radproc process-volumes --version v1_0_standard
+    ```
+
+### All CLI Commands
 
 * **Show Help:**
     ```bash
@@ -116,24 +127,31 @@ Activate the Conda environment (`conda activate frad-proc` or the name in your `
     ```
 * **Index Existing Scans into DB:**
     ```bash
-    radproc index-scans [--output-dir /path/to/processed_scans] [--dry-run]
+    radproc index-scans
     ```
 * **Group Scans into Volumes:**
     ```bash
     radproc group-volumes [--lookback-hours N] [--limit N] [--dry-run]
     ```
-* **Generate/Update Point Time Series in DB (Historical):**
+* **Process Grouped Volumes into Corrected Files:**
     ```bash
-    radproc timeseries <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> [--points P1 P2] [--variable VAR]
+    radproc process-volumes --version <version_name> [--limit N]
     ```
-    *(If `--points` is omitted, processes all points from the database)*
-* **Calculate Accumulated Precipitation (from DB data, outputs CSV):**
+* **Generate Historical Plots:**
     ```bash
-    radproc accumulate <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> --points <point_name> --interval <interval> [--variable RATE_VAR] [--output-file PATH]
+    radproc plot <variable> <elevation> <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> [--source <raw|corrected>] [--version <version_name>]
     ```
-* **Create Animation File (uses DB for scan info):**
+* **Generate Historical Time Series:**
     ```bash
-    radproc animate <variable> <elevation> <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> <output_file.[gif|mp4|...]> [--extent LONMIN LONMAX LATMIN LATMAX] [--no-watermark] [--fps FPS]
+    radproc timeseries <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> [--points P1 P2] [--source <raw|corrected>] [--version <version_name>]
+    ```
+* **Calculate Accumulated Precipitation:**
+    ```bash
+    radproc accumulate <point_name> <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> <interval> [--source <raw|corrected>] [--version <version_name>]
+    ```
+* **Create Animation File:**
+    ```bash
+    radproc animate <variable> <elevation> <start_YYYYMMDD_HHMM> <end_YYYYMMDD_HHMM> <output_file>
     ```
 
 ### Web API
@@ -170,4 +188,4 @@ Activate the Conda environment (`conda activate frad-proc` or the name in your `
 
 ## Dependencies
 
-See `environment.yml`. Key libraries include: `fastapi`, `uvicorn`, `huey`, `psycopg2` (for PostgreSQL), `watchfiles`, `xarray`, `xradar`, `pandas`, `matplotlib`, `cartopy`, `pyyaml`, `tqdm`, `imageio`, `imageio-ffmpeg`.
+See `environment.yml`. Key libraries include: `fastapi`, `uvicorn`, `huey`, `psycopg2` (for PostgreSQL), `watchfiles`, `xarray`, `xradar`, `pandas`, `matplotlib`, `scipy`, `pyart`, `cartopy`, `pyyaml`, `tqdm`, `imageio`, `imageio-ffmpeg`.
