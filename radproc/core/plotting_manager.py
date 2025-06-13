@@ -123,7 +123,7 @@ def generate_plots(
                     target_sweep_node = None
                     for sweep_name in dtree.children:
                         sweep_ds = dtree[sweep_name].ds
-                        if 'elevation' in sweep_ds.coords and abs(float(sweep_ds.elevation.item()) - elevation) < 0.1:
+                        if 'elevation' in sweep_ds.coords and abs(float(sweep_ds.elevation.values[0]) - elevation) < 0.1:
                             azimuth_step = get_setting('radar.azimuth_step', default=0.5)
                             target_sweep_node = data.preprocess_scan(sweep_ds, azimuth_step)
                             target_sweep_node = geo.georeference_dataset(target_sweep_node)
