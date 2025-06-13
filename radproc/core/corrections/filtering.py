@@ -4,7 +4,22 @@ import pyart
 import numpy as np
 import logging
 
+from pyart.util import rolling_window
+
 logger = logging.getLogger(__name__)
+
+# copied from pyart to remove print
+def texture(radar, var):
+    """Determine a texture field using an 11pt stdev
+    texarray=texture(pyradarobj, field)."""
+    fld = radar.fields[var]["data"]
+    tex = np.ma.zeros(fld.shape)
+    for timestep in range(tex.shape[0]):
+        ray = np.ma.std(rolling_window(fld[timestep, :], 11), 1)
+        tex[timestep, 5:-5] = ray
+        tex[timestep, 0:4] = np.ones(4) * ray[0]
+        tex[timestep, -5:] = np.ones(5) * ray[-1]
+    return tex
 
 
 def filter_noise_gatefilter(radar, **params):
@@ -45,7 +60,7 @@ def filter_noise_gatefilter(radar, **params):
                 logger.debug(f"Applying texture filter (max_texture = {max_texture})...")
 
                 # 1. Calculate the texture. The function returns a raw numpy array.
-                texture_data = pyart.util.texture(radar, texture_source_field)
+                texture_data = texture(radar, texture_source_field)
 
                 # 2. Create a proper field dictionary for the texture data.
                 #    We can copy metadata from the source field as a template.
