@@ -35,6 +35,9 @@ log/
 config/*.yaml
 !config/*.yaml.template
 
+# --- Scripts ---
+scripts/frad-proc.bat
+
 
 # --- Generated Output / Binary Files ---
 *.png
@@ -56,3 +59,4 @@ argparse*
 yaml
 sys
 *.txt
+
