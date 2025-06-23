@@ -147,6 +147,17 @@ def _generate_corrected_point_timeseries(
 
         points_to_process = [all_points_map[name] for name in point_names if name in all_points_map]
 
+        # Query for existing data points for the given version
+        point_var_pairs_for_query = [
+            (p['point_id'], v_id) for p in points_to_process for v_id in variable_map.values() if v_id
+        ]
+
+        # NOTE: You will need to update get_existing_timestamps_for_multiple_points
+        # in db_manager.py to accept a 'version_filter' argument.
+        existing_db_ts_map = get_existing_timestamps_for_multiple_points(
+            conn, point_var_pairs_for_query, start_dt, end_dt, version_filter=version
+        )
+
         # Find relevant corrected volume files
         corrected_volumes = get_processed_volume_paths(conn, start_dt, end_dt, version)
         if not corrected_volumes:
@@ -157,7 +168,19 @@ def _generate_corrected_point_timeseries(
         volume_iterator = tqdm(corrected_volumes, desc=f"Corrected Volumes ({version})", unit="vol",
                                disable=not interactive_mode)
 
-        for vol_path, vol_id in volume_iterator:
+        for vol_path, vol_timestamp in volume_iterator:
+
+            # Check if this volume's data is already in the DB for all points/variables
+            is_needed = any(
+                vol_timestamp not in existing_db_ts_map.get((p['point_id'], v_id), set())
+                for p in points_to_process
+                for v_id in variable_map.values() if v_id
+            )
+
+            if not is_needed:
+                logger.debug(f"Skipping volume {vol_path} at {vol_timestamp.isoformat()} as data already exists.")
+                continue
+
             dtree = read_volume_from_cfradial(vol_path)
             if not dtree: continue
 
@@ -198,7 +221,7 @@ def _generate_corrected_point_timeseries(
                                 value = extract_point_value(sweep_ds_geo, var_name, az_idx, rg_idx)
                                 if not np.isnan(value):
                                     global_new_data_to_insert.append({
-                                        'timestamp': vol_id,
+                                        'timestamp': vol_timestamp,
                                         'point_id': point_id,
                                         'variable_id': var_id,
                                         'value': value,

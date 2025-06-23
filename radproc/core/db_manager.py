@@ -223,7 +223,8 @@ def update_point_cached_indices_in_db(conn, point_id: int, az_idx: Optional[int]
 
 # --- Timeseries Data Management ---
 def get_existing_timestamps_for_multiple_points(
-        conn, points_variables_list: List[Tuple[int, int]], start_dt: datetime, end_dt: datetime
+        conn, points_variables_list: List[Tuple[int, int]], start_dt: datetime, end_dt: datetime,
+        version_filter: Optional[str] = None
 ) -> Dict[Tuple[int, int], Set[datetime]]:
     """
     Fetches existing timestamps for multiple (point_id, variable_id) pairs within a date range.
@@ -235,31 +236,30 @@ def get_existing_timestamps_for_multiple_points(
     if not points_variables_list: return results
     try:
         cur = conn.cursor()
-        # Constructing a query that can handle multiple (point_id, variable_id) pairs efficiently.
-        # One way is to use a VALUES list and join, or iterate and do individual queries if the list is small.
-        # For larger lists, a more complex single query is better.
-        # For now, let's iterate for simplicity, can optimize later if it becomes a bottleneck.
-        # A more optimized query might look like:
-        # query_template = """
-        #     SELECT point_id, variable_id, timestamp FROM timeseries_data
-        #     WHERE (point_id, variable_id) IN %s AND timestamp >= %s AND timestamp <= %s;
-        # """
-        # cur.execute(query_template, (tuple(points_variables_list), start_dt, end_dt))
-        # for row in cur.fetchall():
-        #     results[(row[0], row[1])].add(row[2])
 
-        # Simpler iterative approach for now:
         for point_id, variable_id in points_variables_list:
-            query = """
-                    SELECT timestamp \
-                    FROM timeseries_data
-                    WHERE point_id = %s \
-                      AND variable_id = %s \
-                      AND timestamp >= %s \
-                      AND timestamp <= %s; \
-                    """
-            cur.execute(query, (point_id, variable_id, start_dt, end_dt))
-            for row in cur.fetchall(): results[(point_id, variable_id)].add(row[0])
+            # Build the query dynamically to include the version filter if it exists
+            query_base = """
+                SELECT timestamp 
+                FROM timeseries_data
+                WHERE point_id = %s 
+                  AND variable_id = %s 
+                  AND timestamp >= %s 
+                  AND timestamp <= %s
+            """
+            params = [point_id, variable_id, start_dt, end_dt]
+
+            if version_filter:
+                query_base += " AND source_version = %s"
+                params.append(version_filter)
+
+            query = query_base + ";"
+
+            cur.execute(query, tuple(params))
+
+            for row in cur.fetchall():
+                results[(point_id, variable_id)].add(row[0])
+
     except psycopg2.Error as e:
         logger.error(f"DB error fetching existing timestamps for multiple points: {e}", exc_info=True)
     finally:
