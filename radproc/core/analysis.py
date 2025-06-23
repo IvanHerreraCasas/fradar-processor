@@ -169,7 +169,7 @@ def _generate_corrected_point_timeseries(
                 sweep_ds = None
                 for sweep_name in dtree.children:
                     if 'elevation' in dtree[sweep_name].ds.coords and abs(
-                            float(dtree[sweep_name].ds.elevation.item()) - target_elevation) < 0.1:
+                            float(dtree[sweep_name].ds.elevation.values[0]) - target_elevation) < 0.1:
                         sweep_ds = dtree[sweep_name].ds
                         break
 
@@ -485,7 +485,9 @@ def calculate_accumulation(
         version: Optional[str] = None
 ) -> bool:
     """
-    Calculates accumulated precipitation from a specified source (raw or corrected).
+    Calculates accumulated precipitation for a point and time range.
+    Ensures source rate data is in PostgreSQL, then queries it,
+    performs calculations, and saves results to a CSV file.
     """
     logger.info(f"Calculating accumulation for point '{point_name}' from source '{source}'.")
     if source == 'corrected' and not version:
@@ -522,10 +524,45 @@ def calculate_accumulation(
             logger.warning("No rate data found for the specified parameters. Cannot calculate accumulation.")
             return True  # Not an error, just no data.
 
-        # Step 4 & 5: Perform calculation and write CSV (no change in this logic)
+        logger.info(f"Successfully fetched {len(df_rate)} rate data points from database.")
+
+        # 4. Perform Accumulation Calculation (using pandas, as before)
         df_rate.set_index('timestamp', inplace=True)
-        # ... (rest of calculation and CSV writing logic is the same)
-        # ...
+        df_rate.sort_index(inplace=True)
+
+        time_diff = df_rate.index.to_series().diff()
+        duration_h = time_diff.dt.total_seconds() / 3600.0
+
+        rate_numeric = pd.to_numeric(df_rate[rate_variable], errors='coerce')
+        incremental_precip_mm = rate_numeric * duration_h
+        incremental_precip_mm = incremental_precip_mm.fillna(0)  # First diff is NaN, treat as 0 precip
+
+        try:
+            accumulated_series = incremental_precip_mm.resample(interval, label='right', closed='right').sum()
+        except ValueError as e:  # Handles bad interval strings for resample
+            logger.error(f"Invalid resampling interval '{interval}': {e}")
+            return False
+
+        accum_col_name = f'precip_acc_{interval.replace("-", "_").replace(":", "_")}_mm'  # Ensure filename-friendly
+        output_df = accumulated_series.reset_index(name=accum_col_name)
+
+        logger.info(f"Accumulation calculation complete. Generated {len(output_df)} intervals.")
+
+        # 5. Prepare Metadata and Write Output CSV
+        metadata = {
+            "Point Name": point_name,
+            "Target Latitude": point_config.get('latitude', 'N/A'),
+            "Target Longitude": point_config.get('longitude', 'N/A'),
+            "Target Elevation (deg)": point_config.get('target_elevation', 'N/A'),
+            "Source Rate Variable": rate_variable,
+            "Accumulation Interval": interval,
+            "Analysis Start Time (UTC)": start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            "Analysis End Time (UTC)": end_dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            "Data Source": "PostgreSQL Database",
+            "Generated Timestamp (UTC)": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+
+        write_timeseries_csv(output_file_path, output_df, metadata)  # This handles dir creation & overwrite
         logger.info(f"Accumulation results successfully saved to: {output_file_path}")
         return True
 
