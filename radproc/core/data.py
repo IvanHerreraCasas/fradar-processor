@@ -218,7 +218,7 @@ def extract_point_value(ds: xr.Dataset, variable: str, az_idx: int, rg_idx: int)
         if variable not in ds.data_vars:
             logger.warning(f"Variable '{variable}' not found in dataset for value extraction.")
             return np.nan
-        data_point = ds[variable].isel(time=0, elevation=0, azimuth=az_idx, range=rg_idx)
+        data_point = ds[variable].isel(azimuth=az_idx, range=rg_idx)
         value = data_point.compute().item() if hasattr(data_point.data, 'compute') else data_point.item()
         if isinstance(value, (int, float, np.number)) and not np.isnan(value):
             return float(value)
