@@ -126,8 +126,9 @@ def generate_plots(
                         if 'elevation' in sweep_ds.coords and abs(float(sweep_ds.elevation.values[0]) - elevation) < 0.1:
                             azimuth_step = get_setting('radar.azimuth_step', default=0.5)
                             target_sweep_node = data.preprocess_scan(sweep_ds, azimuth_step)
-                            target_sweep_node = geo.georeference_dataset(target_sweep_node)
-                            break
+                            if target_sweep_node:
+                                target_sweep_node = geo.georeference_dataset(target_sweep_node)
+                                break
 
                     if target_sweep_node:
                         image_bytes = plotter.create_ppi_image(target_sweep_node, variable, plot_style,

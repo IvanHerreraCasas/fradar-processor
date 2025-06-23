@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # In radproc/core/data.py
 
-def preprocess_scan(ds: xr.Dataset, azimuth_step: float, for_volume: bool = False) -> xr.Dataset:
+def preprocess_scan(ds: xr.Dataset, azimuth_step: float, for_volume: bool = False) -> Optional[xr.Dataset]:
     """
     Internal function to preprocess a single radar scan Dataset.
 
@@ -40,7 +40,8 @@ def preprocess_scan(ds: xr.Dataset, azimuth_step: float, for_volume: bool = Fals
         if 'azimuth' in ds_processed.dims:
             ds_processed = ds_processed.reindex(azimuth=azimuth_angles, method="nearest", tolerance=azimuth_step)
     except Exception as e:
-        logger.warning(f"Could not reindex azimuth: {e}. Continuing without reindexing.")
+        logger.error(f"Could not reindex azimuth: {e}. Skipping this sweep.", exc_info=True)
+        return None
 
     # --- Step 2: Apply different logic based on the context ---
     if not for_volume:
