@@ -130,13 +130,16 @@ def _generate_corrected_point_timeseries(
         specific_variables: Optional[List[str]],
         interactive_mode: bool
 ) -> bool:
-    """Generates timeseries data from corrected volumetric files."""
+    """
+    Generates timeseries data from corrected volumetric files using an efficient
+    sweep-centric approach.
+    """
     logger.info(f"Starting corrected timeseries generation for version '{version}'.")
     conn = get_connection()
     if not conn: return False
 
     try:
-        # Get configurations for variables and points
+        # --- Configuration Setup ---
         variables_to_process = specific_variables or get_setting('app.timeseries_default_variables', [])
         if not variables_to_process:
             logger.error("No variables specified or configured for timeseries processing.")
@@ -144,21 +147,31 @@ def _generate_corrected_point_timeseries(
 
         variable_map = {name: get_or_create_variable_id(conn, name) for name in variables_to_process}
         all_points_map = {p['point_name']: p for p in get_all_points_config()}
-
         points_to_process = [all_points_map[name] for name in point_names if name in all_points_map]
 
-        # Query for existing data points for the given version
+        # --- Group points by target elevation ---
+        points_by_elevation = {}
+        for point in points_to_process:
+            target_elevation = point.get('target_elevation')
+            if target_elevation is not None:
+                elevation_key = round(target_elevation, 1)
+                if elevation_key not in points_by_elevation:
+                    points_by_elevation[elevation_key] = []
+                points_by_elevation[elevation_key].append(point)
+
+        if not points_by_elevation:
+            logger.info("No points with a defined 'target_elevation' to process.")
+            return True
+
+        # --- Database Query for Existing Data ---
         point_var_pairs_for_query = [
             (p['point_id'], v_id) for p in points_to_process for v_id in variable_map.values() if v_id
         ]
-
-        # NOTE: You will need to update get_existing_timestamps_for_multiple_points
-        # in db_manager.py to accept a 'version_filter' argument.
         existing_db_ts_map = get_existing_timestamps_for_multiple_points(
             conn, point_var_pairs_for_query, start_dt, end_dt, version_filter=version
         )
 
-        # Find relevant corrected volume files
+        # --- File and Data Processing Loop ---
         corrected_volumes = get_processed_volume_paths(conn, start_dt, end_dt, version)
         if not corrected_volumes:
             logger.info(f"No corrected volumes found for version '{version}' in the given time range.")
@@ -176,59 +189,66 @@ def _generate_corrected_point_timeseries(
                 for p in points_to_process
                 for v_id in variable_map.values() if v_id
             )
-
             if not is_needed:
-                logger.debug(f"Skipping volume {vol_path} at {vol_timestamp.isoformat()} as data already exists.")
+                logger.debug(
+                    f"Skipping volume {vol_path} at {vol_timestamp.isoformat()} as all required data already exists.")
                 continue
 
             dtree = read_volume_from_cfradial(vol_path)
             if not dtree: continue
 
-            for point_config in points_to_process:
-                target_elevation = point_config.get('target_elevation')
-                if target_elevation is None: continue
+            # --- Loop through sweeps ---
+            for sweep_name in dtree.children:
+                sweep_ds = dtree[sweep_name].ds
+                if 'elevation' not in sweep_ds.coords:
+                    continue
 
-                # Find the correct sweep in the volume datatree
-                sweep_ds = None
-                for sweep_name in dtree.children:
-                    if 'elevation' in dtree[sweep_name].ds.coords and abs(
-                            float(dtree[sweep_name].ds.elevation.values[0]) - target_elevation) < 0.1:
-                        sweep_ds = dtree[sweep_name].ds
-                        break
+                current_elevation = round(float(sweep_ds.elevation.values[0]), 1)
+                matching_points = points_by_elevation.get(current_elevation)
+                if not matching_points:
+                    continue
 
-                if sweep_ds:
+                sweep_ds_geo = georeference_dataset(sweep_ds)
+                if not ('x' in sweep_ds_geo.coords and 'y' in sweep_ds_geo.coords):
+                    logger.warning(f"Georeferencing failed for sweep {current_elevation} in {vol_path}. Skipping.")
+                    if sweep_ds_geo and sweep_ds_geo is not sweep_ds: sweep_ds_geo.close()
+                    continue
 
-                    sweep_ds_geo = georeference_dataset(sweep_ds)
-                    if not ('x' in sweep_ds_geo.coords and 'y' in sweep_ds_geo.coords):
-                        logger.warning(f"Georeferencing failed for {vol_path}. Skipping point extraction.")
-                        overall_success = False
-                        sweep_ds.close()
-                        if sweep_ds_geo and sweep_ds_geo is not sweep_ds: sweep_ds_geo.close()
-                        continue
-
-                    # Get or calculate indices for the point
+                for point_config in matching_points:
                     point_id = point_config['point_id']
+
                     az_idx, rg_idx = point_config.get('cached_azimuth_index'), point_config.get('cached_range_index')
                     if az_idx is None or rg_idx is None:
-                        indices = find_nearest_indices(sweep_ds_geo, point_config['latitude'], point_config['longitude'])
+                        indices = find_nearest_indices(sweep_ds_geo, point_config['latitude'],
+                                                       point_config['longitude'])
                         if indices:
                             az_idx, rg_idx = indices
                             update_point_cached_indices_in_db(conn, point_id, az_idx, rg_idx)
 
                     if az_idx is not None and rg_idx is not None:
                         for var_name, var_id in variable_map.items():
-                            if var_id:
-                                value = extract_point_value(sweep_ds_geo, var_name, az_idx, rg_idx)
-                                if not np.isnan(value):
-                                    global_new_data_to_insert.append({
-                                        'timestamp': vol_timestamp,
-                                        'point_id': point_id,
-                                        'variable_id': var_id,
-                                        'value': value,
-                                        'source_version': version  # Add the correction version
-                                    })
+                            if not var_id: continue
+
+                            # Granular check for existing data points
+                            if vol_timestamp in existing_db_ts_map.get((point_id, var_id), set()):
+                                continue
+
+                            value = extract_point_value(sweep_ds_geo, var_name, az_idx, rg_idx)
+                            if not np.isnan(value):
+                                global_new_data_to_insert.append({
+                                    'timestamp': vol_timestamp,
+                                    'point_id': point_id,
+                                    'variable_id': var_id,
+                                    'value': value,
+                                    'source_version': version
+                                })
+
+                if sweep_ds_geo and sweep_ds_geo is not sweep_ds:
+                    sweep_ds_geo.close()
+
             dtree.close()
 
+        # --- Batch Insert (Unchanged) ---
         if global_new_data_to_insert:
             logger.info(f"Performing batch insert with {len(global_new_data_to_insert)} new corrected data points...")
             if not batch_insert_timeseries_data(conn, global_new_data_to_insert):
