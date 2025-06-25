@@ -53,6 +53,8 @@ async def queue_timeseries_job(
     start_dt = request_body.start_dt
     end_dt = request_body.end_dt
     variable = request_body.variable
+    source = request_body.source
+    version = request_body.version
 
     logger.info(
         f"Received request to queue timeseries job for point: '{point_name}', "
@@ -60,7 +62,6 @@ async def queue_timeseries_job(
     )
 
     # Use get_point_config_from_db for validation now
-    conn_temp = None
     try:
         conn_temp = get_connection()
         if not get_point_config_from_db(conn_temp, point_name):
@@ -69,11 +70,11 @@ async def queue_timeseries_job(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Point '{point_name}' not found.",
             )
+
+        if conn_temp: release_connection(conn_temp)
     except Exception as e:
          logger.error(f"DB Error during point validation: {e}")
          raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error during validation.")
-    finally:
-         if conn_temp: release_connection(conn_temp)
 
 
     if start_dt >= end_dt:
@@ -89,6 +90,8 @@ async def queue_timeseries_job(
             start_dt.isoformat(),
             end_dt.isoformat(),
             variable,
+            source,
+            version
         )
         task_id = task.id
         logger.info(f"Timeseries job queued successfully for point '{point_name}'. Task ID: {task_id}")
@@ -252,20 +255,21 @@ async def queue_accumulation_job(
     end_dt = request_body.end_dt
     interval = request_body.interval
     rate_variable = request_body.rate_variable or "RATE" # Use default if None
+    source = request_body.source
+    version = request_body.version
+
 
     logger.info(f"Received request to queue accumulation job for point: '{point_name}', Interval: {interval}")
 
     # --- Validation ---
-    conn_temp = None
     try:
         conn_temp = get_connection()
         if not get_point_config_from_db(conn_temp, point_name):
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Point '{point_name}' not found.")
+        if conn_temp: release_connection(conn_temp)
     except Exception as e:
          logger.error(f"DB Error during point validation: {e}")
          raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error during validation.")
-    finally:
-         if conn_temp: release_connection(conn_temp)
 
     if start_dt >= end_dt:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Start datetime must be before end datetime.")
@@ -287,7 +291,9 @@ async def queue_accumulation_job(
             end_dt.isoformat(),
             interval,
             rate_variable,
-            server_output_path
+            server_output_path,
+            source,
+            version
         )
         task_id = task.id
         logger.info(f"Accumulation job queued successfully for point '{point_name}'. Task ID: {task_id}")
