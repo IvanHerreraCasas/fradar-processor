@@ -105,6 +105,9 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset,
                          'value': value,
                          'source_version': 'raw'})
                     point_had_data_added = True
+
+                    if point_config.get('height') is None and not np.isnan(height):
+                        update_point_height(conn, point_id, height)
             if point_had_data_added: points_contributing_data_count += 1
         if new_data_for_batch_insert:
             if batch_insert_timeseries_data(conn, new_data_for_batch_insert):
