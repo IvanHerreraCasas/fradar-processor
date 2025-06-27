@@ -98,7 +98,7 @@ def update_timeseries_for_scan(ds_geo: xr.Dataset,
             for var_name_to_extract in default_variables_to_extract:
                 variable_id = get_or_create_variable_id(conn, var_name_to_extract)
                 if variable_id is None: continue
-                value = extract_point_value(ds_geo, var_name_to_extract, current_indices[0], current_indices[1])
+                value, height = extract_point_value(ds_geo, var_name_to_extract, current_indices[0], current_indices[1])
                 if not np.isnan(value):
                     new_data_for_batch_insert.append(
                         {'timestamp': scan_precise_timestamp, 'point_id': point_id, 'variable_id': variable_id,
