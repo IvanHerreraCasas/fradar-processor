@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS radproc_points (
     target_elevation DOUBLE PRECISION NOT NULL,
     description TEXT,
     cached_azimuth_index INTEGER,
-    cached_range_index INTEGER
+    cached_range_index INTEGER,
+    height REAL
 );
 
 COMMENT ON TABLE radproc_points IS 'Stores definitions of points of interest for time series extraction.';

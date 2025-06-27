@@ -135,20 +135,22 @@ def get_or_create_variable_id(conn, variable_name: str) -> Optional[int]:
 
 # --- Point Management ---
 def get_point_config_from_db(conn, point_name_or_id: Union[str, int]) -> Optional[Dict[str, Any]]:
-    """Fetches point config reflecting new schema (no default_variable_name)."""
+    """Fetches point config."""
     logger.debug(f"Fetching point config for: {point_name_or_id}")
     cur = None
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        sql = """SELECT point_id, \
-                        point_name, \
-                        latitude, \
-                        longitude, \
+        # Added 'height' to the list of selected columns
+        sql = """SELECT point_id,
+                        point_name,
+                        latitude,
+                        longitude,
                         target_elevation,
-                        description, \
-                        cached_azimuth_index, \
-                        cached_range_index
-                 FROM radproc_points """  # Removed default_variable_name
+                        description,
+                        cached_azimuth_index,
+                        cached_range_index,
+                        height
+                 FROM radproc_points """
         if isinstance(point_name_or_id, str):
             cur.execute(sql + "WHERE point_name = %s;", (point_name_or_id,))
         elif isinstance(point_name_or_id, int):
@@ -166,12 +168,13 @@ def get_point_config_from_db(conn, point_name_or_id: Union[str, int]) -> Optiona
 
 
 def get_all_points_from_db(conn) -> List[Dict[str, Any]]:
-    """Fetches all points, reflecting new schema."""
+    """Fetches all points."""
     logger.debug("Fetching all point configurations from database.")
     points_list = []
     cur = None
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        # Added 'height' to the list of selected columns
         cur.execute("""
                     SELECT point_id,
                            point_name,
@@ -180,10 +183,11 @@ def get_all_points_from_db(conn) -> List[Dict[str, Any]]:
                            target_elevation,
                            description,
                            cached_azimuth_index,
-                           cached_range_index
+                           cached_range_index,
+                           height
                     FROM radproc_points
                     ORDER BY point_name;
-                    """)  # Removed default_variable_name
+                    """)
         rows = cur.fetchall()
         for row in rows: points_list.append(dict(row))
         logger.info(f"Fetched {len(points_list)} points from database.")
@@ -220,6 +224,24 @@ def update_point_cached_indices_in_db(conn, point_id: int, az_idx: Optional[int]
     finally:
         if cur: cur.close()
 
+def update_point_height(conn, point_id: int, height: float) -> bool:
+    """
+    Updates the height for a specific point, but only if the height is not already set.
+    """
+    query = """
+        UPDATE radproc_points
+        SET height = %s
+        WHERE point_id = %s AND height IS NULL;
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (height, point_id))
+        conn.commit()
+        return True
+    except psycopg2.Error as e:
+        logger.error(f"Database error updating height for point ID {point_id}: {e}", exc_info=True)
+        conn.rollback()
+        return False
 
 # --- Timeseries Data Management ---
 def get_existing_timestamps_for_multiple_points(

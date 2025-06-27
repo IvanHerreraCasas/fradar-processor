@@ -20,7 +20,7 @@ from .db_manager import (
     batch_insert_timeseries_data, update_point_cached_indices_in_db,
     get_existing_timestamps_for_multiple_points,
     query_scan_log_for_timeseries_processing,
-    query_timeseries_data_for_point, get_processed_volume_paths
+    query_timeseries_data_for_point, get_processed_volume_paths, update_point_height
 )
 
 try:
@@ -233,7 +233,7 @@ def _generate_corrected_point_timeseries(
                             if vol_timestamp in existing_db_ts_map.get((point_id, var_id), set()):
                                 continue
 
-                            value = extract_point_value(sweep_ds_geo, var_name, az_idx, rg_idx)
+                            value, height = extract_point_value(sweep_ds_geo, var_name, az_idx, rg_idx)
                             if not np.isnan(value):
                                 global_new_data_to_insert.append({
                                     'timestamp': vol_timestamp,
@@ -242,6 +242,9 @@ def _generate_corrected_point_timeseries(
                                     'value': value,
                                     'source_version': version
                                 })
+
+                                if point_config.get('height') is None and not np.isnan(height):
+                                    update_point_height(conn, point_id, height)
 
                 if sweep_ds_geo and sweep_ds_geo is not sweep_ds:
                     sweep_ds_geo.close()
@@ -430,7 +433,7 @@ def _generate_raw_point_timeseries(
 
                         for var_name, var_id in active_variables_map.items():
                             if precise_scan_dt not in existing_db_ts_map.get((p_id, var_id), set()):
-                                value = extract_point_value(ds_geo, var_name, current_indices[0], current_indices[1])
+                                value, height = extract_point_value(ds_geo, var_name, current_indices[0], current_indices[1])
                                 if not np.isnan(value):
                                     global_new_data_to_insert.append({
                                         'timestamp': precise_scan_dt,
@@ -440,6 +443,8 @@ def _generate_raw_point_timeseries(
                                         'source_version': 'raw'
                                     })
                                     existing_db_ts_map.setdefault((p_id, var_id), set()).add(precise_scan_dt)
+                                    if p_conf.get('height') is None and not np.isnan(height):
+                                        update_point_height(conn, p_id, height)
                                 else:
                                     logger.debug(
                                         f"NaN value for {var_name} at point {p_name} from {scan_filepath}, not adding.")
@@ -597,6 +602,7 @@ def calculate_accumulation(
             "Target Latitude": point_config.get('latitude', 'N/A'),
             "Target Longitude": point_config.get('longitude', 'N/A'),
             "Target Elevation (deg)": point_config.get('target_elevation', 'N/A'),
+            "Height (m)": f"{point_config.get('height', 'N/A'):.2f}",
             "Source Rate Variable": rate_variable,
             "Accumulation Interval": interval,
             "Analysis Start Time (UTC)": start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
