@@ -610,7 +610,7 @@ def calculate_accumulation(
             "Accumulation Interval": interval,
             "Analysis Start Time (UTC)": start_dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
             "Analysis End Time (UTC)": end_dt.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            "Data Source": "PostgreSQL Database",
+            "Data Source": source,
             "Generated Timestamp (UTC)": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         }
 
