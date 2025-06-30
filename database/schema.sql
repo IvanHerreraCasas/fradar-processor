@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS radproc_processed_volumes (
     filepath VARCHAR(1024) UNIQUE NOT NULL,
     processing_version VARCHAR(50) NOT NULL,
     processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    -- The composite UNIQUE constraint allows multiple versions per volume
+    UNIQUE (volume_identifier, processing_version)
 );
 
 COMMENT ON TABLE radproc_processed_volumes IS 'Tracks processed data volumes (e.g., CfRadial2) generated from multiple raw scans.';

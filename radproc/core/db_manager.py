@@ -614,9 +614,8 @@ def add_processed_volume_log(conn, volume_identifier: datetime, filepath: str, v
             INSERT INTO radproc_processed_volumes
             (volume_identifier, filepath, processing_version)
             VALUES (%s, %s, %s)
-            ON CONFLICT (volume_identifier) DO UPDATE SET
+            ON CONFLICT (volume_identifier, processing_version) DO UPDATE SET
                 filepath = EXCLUDED.filepath,
-                processing_version = EXCLUDED.processing_version,
                 processed_at = NOW()
             RETURNING processed_volume_id;
             """
