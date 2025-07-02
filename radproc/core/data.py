@@ -96,12 +96,11 @@ def preprocess_scan(ds: xr.Dataset, azimuth_step: float, for_volume: bool = Fals
             logger.error(f"Error processing time dimension in single-scan mode: {e}.")
             return None
 
-        logger.error(f"Testing")
+        logger.error("test")
 
         # 2b. Standardize Elevation Dimension
         try:
             elevation_val = np.atleast_2d(ds_processed['sweep_fixed_angle'].values)[0,0]
-            print(elevation_val)
             if 'elevation' in ds_processed.coords: ds_processed = ds_processed.drop_vars("elevation", errors='ignore')
             ds_processed = ds_processed.expand_dims({"elevation": [float(elevation_val)]})
             ds_processed = ds_processed.set_coords("elevation")
