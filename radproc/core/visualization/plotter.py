@@ -80,8 +80,8 @@ def create_ppi_image(
 
         # --- Extract Metadata ---
         try:
-            dt_np = ds['time'].values[0]
-            dt_utc = dt_np.astype(datetime) # Python datetime object in UTC
+            dt_str = str(ds['time'].values[0])
+            dt_utc = datetime.fromisoformat(dt_str) # Python datetime object in UTC
             elevation = float(ds['elevation'].values.item()) # Default float formatting
             radar_lat = float(ds['latitude'].values.item())
             radar_lon = float(ds['longitude'].values.item())
