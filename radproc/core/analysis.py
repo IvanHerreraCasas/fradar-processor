@@ -204,6 +204,7 @@ def _generate_corrected_point_timeseries(
             for sweep_name in dtree.children:
                 sweep_ds = dtree[sweep_name].ds
                 if 'elevation' not in sweep_ds.coords:
+                    logger.warning("Elevation not in sweep coords")
                     continue
 
                 current_elevation = round(float(sweep_ds.elevation.values[0]), 1)
@@ -248,6 +249,8 @@ def _generate_corrected_point_timeseries(
 
                                 if point_config.get('height') is None and not np.isnan(height):
                                     update_point_height(conn, point_id, height)
+                            else:
+                                logger.debug(f"NaN value for {var_name} at point {point_config['point_name']}")
 
                 if sweep_ds_geo and sweep_ds_geo is not sweep_ds:
                     sweep_ds_geo.close()
