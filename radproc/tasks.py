@@ -61,7 +61,8 @@ def run_generate_point_timeseries(point_name: str, start_dt_iso: str, end_dt_iso
                 "point_name": point_name,
                 "start_dt_iso": start_dt_iso,
                 "end_dt_iso": end_dt_iso,
-                "variable_processed": variable_override or "defaults"  # Indicate what was processed
+                "variable_processed": variable_override or "defaults" ,
+                "source_version": version,
             }
         else:
             logger.error(

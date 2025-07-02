@@ -89,9 +89,9 @@ async def queue_timeseries_job(
             point_name, # Pass point_name directly
             start_dt.isoformat(),
             end_dt.isoformat(),
-            variable,
             source,
-            version
+            version,
+            variable,
         )
         task_id = task.id
         logger.info(f"Timeseries job queued successfully for point '{point_name}'. Task ID: {task_id}")
@@ -152,6 +152,7 @@ async def get_timeseries_job_data(
             job_start_iso = job_result_payload.get("start_dt_iso")
             job_end_iso = job_result_payload.get("end_dt_iso")
             variable_processed = job_result_payload.get("variable_processed")
+            source_version = job_result_payload.get("source_version")
 
             if not all([point_name, job_start_iso, job_end_iso, variable_processed]):
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Job result missing necessary parameters.")
@@ -188,7 +189,7 @@ async def get_timeseries_job_data(
             if query_start_dt.tzinfo is None: query_start_dt = query_start_dt.replace(tzinfo=timezone.utc)
             if query_end_dt.tzinfo is None: query_end_dt = query_end_dt.replace(tzinfo=timezone.utc)
 
-            df = query_timeseries_data_for_point(conn, point_id, variable_id, query_start_dt, query_end_dt, variable_to_query)
+            df = query_timeseries_data_for_point(conn, point_id, variable_id, query_start_dt, query_end_dt, variable_to_query, source_version,)
             # --- End Query DB ---
 
             # Resample if requested
