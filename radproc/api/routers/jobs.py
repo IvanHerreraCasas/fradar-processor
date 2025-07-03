@@ -209,7 +209,7 @@ async def get_timeseries_job_data(
                  stream = io.StringIO()
                  df_out = df.copy()
                  if "timestamp" in df_out.columns and pd.api.types.is_datetime64_any_dtype(df_out["timestamp"]):
-                      df_out["timestamp"] = df_out["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                      df_out["timestamp"] = df_out["timestamp"].dt.tz_convert('UTC').strftime("%Y-%m-%dT%H:%M:%SZ")
                  df_out.to_csv(stream, index=False)
                  content = stream.getvalue()
                  stream.close()
