@@ -92,7 +92,7 @@ COMMENT ON COLUMN radproc_scan_log.processed_at IS 'When this scan was added to 
 CREATE TABLE IF NOT EXISTS radproc_processed_volumes (
     processed_volume_id SERIAL PRIMARY KEY,
     -- This column MUST match the data type of volume_identifier in radproc_scan_log
-    volume_identifier TIMESTAMPTZ NOT NULL UNIQUE,
+    volume_identifier TIMESTAMPTZ NOT NULL,
     filepath VARCHAR(1024) UNIQUE NOT NULL,
     processing_version VARCHAR(50) NOT NULL,
     processed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
