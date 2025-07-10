@@ -765,8 +765,7 @@ def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100,
     identifiers = []
     try:
         with conn.cursor() as cur:
-            # Note: the version is passed as a parameter twice for the query
-            cur.execute(query, (version, limit))
+            cur.execute(query, tuple(params))
             results = cur.fetchall()
             identifiers = [row[0] for row in results]
     except psycopg2.Error as e:
