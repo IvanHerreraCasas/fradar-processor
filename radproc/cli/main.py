@@ -619,6 +619,26 @@ def cli_process_volumes(args: argparse.Namespace):
     logger.info(f"Using processing version: {args.version}")
     logger.info(f"Processing up to {args.limit} volumes in this run.")
 
+    start_dt = None
+    end_dt = None
+    dt_format = "%Y%m%d_%H%M"
+    if args.start:
+        try:
+            start_dt = datetime.strptime(args.start, dt_format).replace(tzinfo=timezone.utc)
+        except ValueError:
+            logger.error(f"Invalid start date format. Please use YYYYMMDD_HHMM.")
+            sys.exit(1)
+    if args.end:
+        try:
+            end_dt = datetime.strptime(args.end, dt_format).replace(tzinfo=timezone.utc)
+        except ValueError:
+            logger.error(f"Invalid end date format. Please use YYYYMMDD_HHMM.")
+            sys.exit(1)
+
+    if start_dt and end_dt and start_dt >= end_dt:
+        logger.error("Start datetime must be before end datetime.")
+        sys.exit(1)
+
     conn = None
     processed_count = 0
     error_count = 0
@@ -628,7 +648,8 @@ def cli_process_volumes(args: argparse.Namespace):
         logger.info("Database connection established.")
 
         # Pass the version to the database function
-        unprocessed_ids = get_unprocessed_volume_identifiers(conn, version=args.version, limit=args.limit)
+        unprocessed_ids = get_unprocessed_volume_identifiers(conn, version=args.version, limit=args.limit,
+                                                             start_dt=start_dt, end_dt=end_dt)
 
         if not unprocessed_ids:
             logger.info(f"No new volumes to process for version '{args.version}' at this time.")
@@ -846,6 +867,16 @@ def main():
         type=int,
         default=50,
         help="Maximum number of volumes to process in one run (default: 50)."
+    )
+    process_volumes_parser.add_argument(
+        "--start",
+        metavar="YYYYMMDD_HHMM",
+        help="The start of the datetime range to process volumes."
+    )
+    process_volumes_parser.add_argument(
+        "--end",
+        metavar="YYYYMMDD_HHMM",
+        help="The end of the datetime range to process volumes."
     )
     process_volumes_parser.set_defaults(func=cli_process_volumes)
 

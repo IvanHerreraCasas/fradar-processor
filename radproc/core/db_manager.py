@@ -224,6 +224,7 @@ def update_point_cached_indices_in_db(conn, point_id: int, az_idx: Optional[int]
     finally:
         if cur: cur.close()
 
+
 def update_point_height(conn, point_id: int, height: float) -> bool:
     """
     Updates the height for a specific point, but only if the height is not already set.
@@ -242,6 +243,7 @@ def update_point_height(conn, point_id: int, height: float) -> bool:
         logger.error(f"Database error updating height for point ID {point_id}: {e}", exc_info=True)
         conn.rollback()
         return False
+
 
 # --- Timeseries Data Management ---
 def get_existing_timestamps_for_multiple_points(
@@ -316,7 +318,9 @@ def batch_insert_timeseries_data(conn, data_to_insert: List[Dict[str, Any]]) -> 
         conn.rollback()
         return False
 
-def query_timeseries_data_for_point(conn, point_id: int, variable_id: int, start_dt: datetime, end_dt: datetime, variable_name: str, source_version: str = 'raw') -> pd.DataFrame:
+
+def query_timeseries_data_for_point(conn, point_id: int, variable_id: int, start_dt: datetime, end_dt: datetime,
+                                    variable_name: str, source_version: str = 'raw') -> pd.DataFrame:
     """
     Queries all timeseries data for a specific point, variable, and time range,
     filtered by the source version.
@@ -340,6 +344,7 @@ def query_timeseries_data_for_point(conn, point_id: int, variable_id: int, start
     except psycopg2.Error as e:
         logger.error(f"Database error querying timeseries data: {e}", exc_info=True)
         return pd.DataFrame()
+
 
 # --- Scan Log Management ---
 def add_scan_to_log(conn, filepath: str, precise_ts: datetime, elevation: float,
@@ -453,15 +458,17 @@ def get_ungrouped_scans_for_volume_assignment(conn,
     return results
 
 
-def update_volume_identifier_for_scans(conn, scan_log_ids: List[int], volume_identifier: datetime) -> int: # Returns count
+def update_volume_identifier_for_scans(conn, scan_log_ids: List[int],
+                                       volume_identifier: datetime) -> int:  # Returns count
     """Updates the volume_identifier for a list of scan_log_ids."""
     if not scan_log_ids: return 0
-    logger.info(f"Attempting to update volume ID to {volume_identifier.isoformat()} for {len(scan_log_ids)} scan log entries.")
+    logger.info(
+        f"Attempting to update volume ID to {volume_identifier.isoformat()} for {len(scan_log_ids)} scan log entries.")
     cur = None
     successful_updates = 0
     try:
         cur = conn.cursor()
-        for scan_log_id in scan_log_ids: # Process one by one
+        for scan_log_id in scan_log_ids:  # Process one by one
             try:
                 cur.execute(
                     "UPDATE radproc_scan_log SET volume_identifier = %s WHERE scan_log_id = %s;",
@@ -471,16 +478,18 @@ def update_volume_identifier_for_scans(conn, scan_log_ids: List[int], volume_ide
                     successful_updates += 1
                 # No need to commit here if we commit after the loop
             except psycopg2.errors.UniqueViolation:
-                conn.rollback() # Rollback the current transaction for this single conflicting update
-                logger.warning(f"Skipped assigning volume ID to scan_log_id {scan_log_id} due to unique constraint conflict for (volume_identifier, sequence_number, elevation). The conflicting key was for volume {volume_identifier.isoformat()}.")
+                conn.rollback()  # Rollback the current transaction for this single conflicting update
+                logger.warning(
+                    f"Skipped assigning volume ID to scan_log_id {scan_log_id} due to unique constraint conflict for (volume_identifier, sequence_number, elevation). The conflicting key was for volume {volume_identifier.isoformat()}.")
                 # Start a new transaction for the next iteration if default is not autocommit
                 # If autocommit is off (default), a new transaction starts automatically after rollback.
             except psycopg2.Error as e:
                 conn.rollback()
                 logger.error(f"DB error updating volume ID for scan_log_id {scan_log_id}: {e}", exc_info=True)
                 # Optionally re-raise or handle more specifically if this error should stop the batch
-        conn.commit() # Commit all successful non-conflicting updates
-        logger.info(f"Successfully updated {successful_updates} of {len(scan_log_ids)} scan log entries with volume ID.")
+        conn.commit()  # Commit all successful non-conflicting updates
+        logger.info(
+            f"Successfully updated {successful_updates} of {len(scan_log_ids)} scan log entries with volume ID.")
         return successful_updates
     except Exception as e:
         if conn and not conn.closed: conn.rollback()
@@ -554,6 +563,7 @@ def find_latest_scan_for_sequence(conn,
     finally:
         if cur: cur.close()
 
+
 # find_potential_volume_members might be better implemented in the CLI command logic itself,
 # by querying ungrouped scans and then applying Python logic to group them based on
 # sequence number and time proximity around an identified '_0' scan.
@@ -592,7 +602,6 @@ def get_potential_volume_members_by_time_and_seq(conn,
     return results
 
 
-
 def add_processed_volume_log(conn, volume_identifier: datetime, filepath: str, version: str) -> Optional[int]:
     """
     Adds a record for a newly created processed volume file (e.g., CfRadial2).
@@ -627,7 +636,8 @@ def add_processed_volume_log(conn, volume_identifier: datetime, filepath: str, v
             return row[0]
         return None
     except psycopg2.Error as e:
-        logger.error(f"DB error logging processed volume for volume_identifier {volume_identifier.isoformat()}: {e}", exc_info=True)
+        logger.error(f"DB error logging processed volume for volume_identifier {volume_identifier.isoformat()}: {e}",
+                     exc_info=True)
         if conn and not conn.closed: conn.rollback()
         return None
     finally:
@@ -665,13 +675,14 @@ def query_unprocessed_volumes(conn, min_scans_per_volume: int = 10) -> List[date
             ORDER BY cv.volume_identifier;
         """
         cur.execute(sql, (min_scans_per_volume,))
-        results = [row[0] for row in cur.fetchall()] # row[0] will be a datetime object
+        results = [row[0] for row in cur.fetchall()]  # row[0] will be a datetime object
         logger.info(f"Found {len(results)} unprocessed volumes ready for processing.")
     except psycopg2.Error as e:
         logger.error(f"DB error querying for unprocessed volumes: {e}", exc_info=True)
     finally:
         if cur: cur.close()
     return results
+
 
 def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[Tuple[str, float]]:
     """
@@ -703,7 +714,10 @@ def get_scan_paths_for_volume(conn, volume_identifier: datetime) -> List[Tuple[s
         if cur: cur.close()
     return results
 
-def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100) -> List[datetime]:
+
+def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100,
+                                       start_dt: Optional[datetime] = None,
+                                       end_dt: Optional[datetime] = None) -> List[datetime]:
     """
     Finds volume_identifiers that have been grouped but have NOT yet been
     processed for a specific version.
@@ -716,6 +730,8 @@ def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100) -> 
         conn: Active database connection.
         version: The processing version to check for (e.g., 'v1_0').
         limit: The maximum number of volume identifiers to return.
+        start_dt: The start datetime for filtering volume identifiers.
+        end_dt: The end datetime for filtering volume identifiers.
 
     Returns:
         A list of datetime objects representing the volume identifiers to be processed.
@@ -723,18 +739,29 @@ def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100) -> 
     # This query uses NOT EXISTS, which is an efficient way to find rows
     # in one table that don't have a corresponding match in another.
     query = """
-        SELECT DISTINCT s.volume_identifier
-        FROM radproc_scan_log s
-        WHERE s.volume_identifier IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1
-              FROM radproc_processed_volumes v
-              WHERE v.volume_identifier = s.volume_identifier
-                AND v.processing_version = %s
-          )
-        ORDER BY s.volume_identifier
-        LIMIT %s;
-    """
+            SELECT DISTINCT s.volume_identifier
+            FROM radproc_scan_log s
+            WHERE s.volume_identifier IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM radproc_processed_volumes v
+                  WHERE v.volume_identifier = s.volume_identifier
+                    AND v.processing_version = %s
+              )
+        """
+    params = [version]
+
+    if start_dt:
+        query += " AND s.volume_identifier >= %s"
+        params.append(start_dt)
+    if end_dt:
+        query += " AND s.volume_identifier <= %s"
+        params.append(end_dt)
+
+    query += " ORDER BY s.volume_identifier LIMIT %s;"
+    params.append(limit)
+
+
     identifiers = []
     try:
         with conn.cursor() as cur:
@@ -743,9 +770,11 @@ def get_unprocessed_volume_identifiers(conn, version: str, limit: int = 100) -> 
             results = cur.fetchall()
             identifiers = [row[0] for row in results]
     except psycopg2.Error as e:
-        logger.error(f"Database error fetching unprocessed volume identifiers for version '{version}': {e}", exc_info=True)
+        logger.error(f"Database error fetching unprocessed volume identifiers for version '{version}': {e}",
+                     exc_info=True)
         return []
     return identifiers
+
 
 def get_processed_volume_paths(conn, start_dt: datetime, end_dt: datetime, version: str) -> List[Tuple[str, datetime]]:
     """
