@@ -204,7 +204,8 @@ def _generate_corrected_point_timeseries(
             for sweep_name in dtree.children:
                 sweep_ds = dtree[sweep_name].ds
                 if 'elevation' not in sweep_ds.coords:
-                    logger.warning("Elevation not in sweep coords")
+                    if sweep_name.startswith('sweep'):
+                        logger.warning(f"Elevation not in sweep coords for sweep: {sweep_name}")
                     continue
 
                 current_elevation = round(float(sweep_ds.elevation.values[0]), 1)
