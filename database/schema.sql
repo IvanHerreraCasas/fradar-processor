@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS timeseries_data (
     timestamp TIMESTAMPTZ NOT NULL, -- Stores UTC
     point_id INTEGER NOT NULL,
     variable_id INTEGER NOT NULL,
-    value DOUBLE PRECISION NOT NULL,
+    value DOUBLE PRECISION,
     source_version VARCHAR(50) NOT NULL DEFAULT 'raw', -- Tracks the source (e.g., 'raw', 'v1.0')
     PRIMARY KEY (timestamp, point_id, variable_id, source_version), -- Updated Primary Key
     CONSTRAINT fk_point

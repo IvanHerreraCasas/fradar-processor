@@ -239,19 +239,19 @@ def _generate_corrected_point_timeseries(
                                 continue
 
                             value, height = extract_point_value(sweep_ds_geo, var_name, az_idx, rg_idx)
-                            if not np.isnan(value):
-                                global_new_data_to_insert.append({
-                                    'timestamp': vol_timestamp,
-                                    'point_id': point_id,
-                                    'variable_id': var_id,
-                                    'value': value,
-                                    'source_version': version
-                                })
 
-                                if point_config.get('height') is None and not np.isnan(height):
-                                    update_point_height(conn, point_id, height)
-                            else:
-                                logger.debug(f"NaN value for {var_name} at point {point_config['point_name']}")
+                            db_value = None if np.isnan(value) else value
+
+                            global_new_data_to_insert.append({
+                                'timestamp': vol_timestamp,
+                                'point_id': point_id,
+                                'variable_id': var_id,
+                                'value': db_value,
+                                'source_version': version
+                            })
+
+                            if point_config.get('height') is None and not np.isnan(height):
+                                update_point_height(conn, point_id, height)
 
                 if sweep_ds_geo and sweep_ds_geo is not sweep_ds:
                     sweep_ds_geo.close()
@@ -441,20 +441,18 @@ def _generate_raw_point_timeseries(
                         for var_name, var_id in active_variables_map.items():
                             if precise_scan_dt not in existing_db_ts_map.get((p_id, var_id), set()):
                                 value, height = extract_point_value(ds_geo, var_name, current_indices[0], current_indices[1])
-                                if not np.isnan(value):
-                                    global_new_data_to_insert.append({
-                                        'timestamp': precise_scan_dt,
-                                        'point_id': p_id,
-                                        'variable_id': var_id,
-                                        'value': value,
-                                        'source_version': 'raw'
-                                    })
-                                    existing_db_ts_map.setdefault((p_id, var_id), set()).add(precise_scan_dt)
-                                    if p_conf.get('height') is None and not np.isnan(height):
-                                        update_point_height(conn, p_id, height)
-                                else:
-                                    logger.debug(
-                                        f"NaN value for {var_name} at point {p_name} from {scan_filepath}, not adding.")
+
+                                db_value = None if np.isnan(value) else value
+                                global_new_data_to_insert.append({
+                                    'timestamp': precise_scan_dt,
+                                    'point_id': p_id,
+                                    'variable_id': var_id,
+                                    'value': db_value,
+                                    'source_version': 'raw'
+                                })
+                                existing_db_ts_map.setdefault((p_id, var_id), set()).add(precise_scan_dt)
+                                if p_conf.get('height') is None and not np.isnan(height):
+                                    update_point_height(conn, p_id, height)
                 except Exception as e_scan:
                     logger.error(f"Error processing scan file {scan_filepath}: {e_scan}", exc_info=True)
                     overall_success = False
