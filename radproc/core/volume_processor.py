@@ -21,9 +21,6 @@ from .utils.helpers import parse_scan_sequence_number
 
 logger = logging.getLogger(__name__)
 
-
-
-
 def create_volume_from_files(
     scans_with_elevation: List[Tuple[str, float]],  version: str) -> Optional[pyart.core.Radar]:
     """
@@ -49,6 +46,12 @@ def create_volume_from_files(
     if elevations_to_keep:
         # Create a set for efficient lookup
         keep_elevs = set(elevations_to_keep)
+
+        filtered_scans = [
+            (path, elev) for path, elev in scans_with_elevation
+            if any(abs(elev - keep_elev) < 0.1 for keep_elev in keep_elevs)
+        ]
+
         # Filter the list, allowing for a small tolerance
         scan_paths = [
             path for path, elev in scans_with_elevation
@@ -90,18 +93,41 @@ def create_volume_from_files(
     # 3. Manually construct the complete DataTree object
     first_sweep = sweep_datasets[0]
     last_sweep = sweep_datasets[-1]
+    nsweeps = len(sweep_datasets)
+    sweep_elevations = [elev for path, elev in filtered_scans]
 
+    radar_coords = {
+        "latitude": first_sweep.latitude, "longitude": first_sweep.longitude, "altitude": first_sweep.altitude,
+    }
     root_attrs = {
         "Conventions": "Cf/Radial", "history": f"Created by RadProc {version}",
+    }
+    # Define all scalar metadata that should appear as data variables
+    scalar_data_vars = {
+        'volume_number': 0,  # Added to match image
+        'platform_type': 'fixed',  # Added to match image
+        'instrument_type': 'radar',  # Added to match image
         "time_coverage_start": f"{pd.to_datetime(first_sweep.time.min().values).isoformat()}Z",
         "time_coverage_end": f"{pd.to_datetime(last_sweep.time.max().values).isoformat()}Z",
+        **radar_coords,
     }
-    root_ds = xr.Dataset(
-        coords={"latitude": first_sweep.latitude, "longitude": first_sweep.longitude, "altitude": first_sweep.altitude},
-        attrs=root_attrs)
 
-    radar_params_ds = xr.Dataset(coords=root_ds.coords)
-    georef_ds = xr.Dataset(coords=root_ds.coords)
+    # Create the initial dataset
+    root_ds = xr.Dataset(
+        data_vars={
+            **scalar_data_vars,
+            'sweep_group_name': ('sweep', [i for i in range(nsweeps)]),
+            'sweep_fixed_angle': ('sweep', sweep_elevations),
+        },
+        attrs=root_attrs
+    )
+
+    # Xarray promotes scalar variables to coordinates by default.
+    # Move them back to 'Data variables' to match the desired output.
+    root_ds = root_ds.reset_coords(list(scalar_data_vars.keys()))
+
+    radar_params_ds = xr.Dataset(coords=radar_coords)
+    georef_ds = xr.Dataset(coords=radar_coords)
     calib_vars = {key: first_sweep.attrs[key] for key in ['tx_power_h', 'antenna_gain_v'] if key in first_sweep.attrs}
     radar_calib_ds = xr.Dataset(calib_vars)
 
@@ -113,6 +139,7 @@ def create_volume_from_files(
         tree_dict[f"/sweep_{i}"] = sweep_ds
 
     volume_tree = DataTree.from_dict(tree_dict)
+
 
     # 4. Convert the datatree to a Py-ART Radar object
     logger.info("Converting datatree to Py-ART Radar object...")
