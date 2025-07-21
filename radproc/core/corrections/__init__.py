@@ -6,7 +6,7 @@ from radproc.core.config import get_setting
 # Import methods from other files within this package
 from .filtering import filter_noise_gatefilter
 from .despeckle import despeckle_field_pyart, despeckle_by_azimuth_width
-from .attenuation import correct_attenuation_kdp
+from .attenuation import correct_attenuation_kdp, correct_attenuation_zphi_custom
 from .qpe import estimate_rate_composite
 from .utils import sanitize_field
 
@@ -42,6 +42,8 @@ def _dispatch_attenuation_method(radar, config):
     params = config.get('params', {})
     if method == 'kdp_based':
         correct_attenuation_kdp(radar, **params)
+    elif method == 'zphi_custom':
+        correct_attenuation_zphi_custom(radar, **params)
     elif method == 'none':
         logger.info("No attenuation correction specified.")
     else:
