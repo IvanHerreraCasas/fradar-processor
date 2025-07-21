@@ -99,15 +99,15 @@ def apply_corrections(radar: pyart.core.Radar, version: str) -> pyart.core.Radar
                 temp_fields_to_remove.append(temp_name)
                 logger.info(f"Created temporary sanitized field: '{temp_name}'")
 
-    try:
-        _dispatch_attenuation_method(radar, config.get('attenuation', {}))
-        _dispatch_rate_method(radar, config.get('rate_estimation', {}))
-    finally:
+    _dispatch_attenuation_method(radar, config.get('attenuation', {}))
+    _dispatch_rate_method(radar, config.get('rate_estimation', {}))
+
+    #finally:
         # --- Final Step: Clean up all temporary fields ---
-        for field in temp_fields_to_remove:
-            if field in radar.fields:
-                radar.fields.pop(field)
-        logger.info(f"Cleaned up {len(temp_fields_to_remove)} temporary fields.")
+        #for field in temp_fields_to_remove:
+        #    if field in radar.fields:
+        #        radar.fields.pop(field)
+        #logger.info(f"Cleaned up {len(temp_fields_to_remove)} temporary fields.")
 
     logger.info("--- Finished scientific corrections ---")
     return radar
