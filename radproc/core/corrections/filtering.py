@@ -49,6 +49,9 @@ def filter_noise_gatefilter(radar, **params):
         if rhohv_field in radar.fields:
             logger.debug(f"Applying RhoHV filter (min_rhohv = {min_rhohv})...")
             gatefilter.exclude_below(rhohv_field, min_rhohv)
+
+            # To mask nan values
+            gatefilter.exclude_invalid(rhohv_field)
         else:
             logger.warning(f"Could not apply RhoHV filter: field '{rhohv_field}' not found.")
 
