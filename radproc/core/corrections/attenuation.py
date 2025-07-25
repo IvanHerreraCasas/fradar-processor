@@ -220,13 +220,19 @@ def correct_attenuation_zphi_custom(radar, **params):
         # (i.e., where ray_refl was filled with 0.0)
         refl_linear[ray_refl == 0.0] = 0.0
 
-        integral_full_path = 0.46 * b_coef * np.sum(refl_linear ** b_coef) * gate_spacing_km
         integrand = refl_linear ** b_coef
-        integral_partial = 0.46 * b_coef * (np.sum(integrand) - np.cumsum(integrand)) * gate_spacing_km
+
+        integral_up_to_r = cumulative_trapezoid(integrand, dx=gate_spacing_km, initial=0)
+        integral_full_path = 0.46 * b_coef * integral_up_to_r[-1]
+        integral_partial = 0.46 * b_coef * (integral_up_to_r[-1] - integral_up_to_r)
+
         denominator = integral_full_path + c_factor * integral_partial
         denominator[denominator == 0] = np.inf
+
         specific_attenuation = (refl_linear ** b_coef * c_factor) / denominator
-        cumulative_pia = 2 * np.cumsum(specific_attenuation) * gate_spacing_km
+
+        cumulative_pia = 2 * cumulative_trapezoid(specific_attenuation, dx=gate_spacing_km, initial=0)
+
         corrected_refl_data[i, :] += cumulative_pia
         spec_attn_data[i, :] = specific_attenuation
         pia_data[i, :] = cumulative_pia
