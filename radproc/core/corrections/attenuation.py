@@ -3,7 +3,8 @@ import pyart
 import numpy as np
 import logging
 from scipy.integrate import cumulative_trapezoid
-from scipy.signal import savgol_filter
+from scipy.signal import savgol_filter, medfilt
+from sklearn.isotonic import IsotonicRegression
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def correct_attenuation_kdp(radar, **params):
     radar.add_field_like(input_refl_field, 'path_integrated_attenuation', pia_data, replace_existing=True)
 
 
-def _find_delta_phidp(reflectivity_ray, phidp_ray, refl_threshold_dbz, min_precip_gates, mean_window=5):
+def _find_delta_phidp(reflectivity_ray, phidp_ray, refl_threshold_dbz=25, min_precip_gates=10, median_window=3):
     """Calculates the differential phase shift (Delta PhiDP) across a
     precipitation region identified in a ray.
 
@@ -69,7 +70,7 @@ def _find_delta_phidp(reflectivity_ray, phidp_ray, refl_threshold_dbz, min_preci
                                     considered precipitation.
         min_precip_gates (int): The minimum number of total gates required to be
                                 considered a valid precipitation segment.
-        mean_window (int, optional): The number of gates at the start and end
+        median_window (int, optional): The number of gates at the start and end
                                      of the precipitation path to average PhiDP
                                      over. Defaults to 5.
 
@@ -91,12 +92,12 @@ def _find_delta_phidp(reflectivity_ray, phidp_ray, refl_threshold_dbz, min_preci
     valid_precip_indices = above_threshold[valid_phidp_mask]
 
     # Ensure there are enough valid gates left for the calculation
-    if valid_precip_indices.size < min_precip_gates or valid_precip_indices.size < mean_window * 2:
+    if valid_precip_indices.size < min_precip_gates or valid_precip_indices.size < median_window * 2:
         return None
 
     # Use the filtered indices for the averaging windows
-    start_indices = valid_precip_indices[:mean_window]
-    end_indices = valid_precip_indices[-mean_window:]
+    start_indices = valid_precip_indices[:median_window]
+    end_indices = valid_precip_indices[-median_window:]
 
     # This calculation is now safe from all-masked slices
     start_phidp = np.median(phidp_ray[start_indices])
@@ -109,20 +110,24 @@ def _find_delta_phidp(reflectivity_ray, phidp_ray, refl_threshold_dbz, min_preci
     return end_phidp - start_phidp
 
 
-def _process_phidp_ray(phidp_ray, window_len, polyorder=2):
+def _process_phidp_ray(phidp_ray, window_len):
     """
     Unwraps, smooths, and enforces monotonicity on a single ray of
-    differential phase data, correctly handling masked arrays.
+    differential phase data using Isotonic Regression.
+
+    This version is more robust to noise and spikes than using a simple
+    cumulative maximum.
     """
     # Get the original mask and the valid data points for interpolation
     original_mask = np.ma.getmaskarray(phidp_ray)
     valid_mask = ~original_mask
     x_valid = np.where(valid_mask)[0]
-    y_valid = phidp_ray[valid_mask].data # Use .data to get the raw numbers
+    y_valid = phidp_ray[valid_mask].data  # Use .data to get the raw numbers
 
     # If there are not enough valid points to process, return the original ray
-    if len(x_valid) < polyorder + 2:
+    if len(x_valid) < 5:
         return phidp_ray
+
 
     # Create a full x-axis and interpolate to fill the masked gaps
     x_full = np.arange(len(phidp_ray))
@@ -133,29 +138,33 @@ def _process_phidp_ray(phidp_ray, window_len, polyorder=2):
     unwrapped_phidp = np.unwrap(interp_phidp, discont=180)
 
     # 2. Smooth the unwrapped data
-    # Ensure window length is a positive odd integer
-    if window_len > len(unwrapped_phidp):
-        window_len = len(unwrapped_phidp)
-    if window_len % 2 == 0:
-        window_len -= 1
-    if window_len < 3:
-        smoothed_phidp = unwrapped_phidp # Not enough points to smooth
-    else:
-        smoothed_phidp = savgol_filter(unwrapped_phidp, window_len, polyorder)
+    smoothed_phidp = medfilt(unwrapped_phidp, kernel_size=window_len)
 
-    # 3. Enforce that the profile is always non-decreasing
-    monotonic_phidp = np.maximum.accumulate(smoothed_phidp)
+    # 3. Enforce that the profile is non-decreasing using Isotonic Regression
+    # This is the new, more robust method.
+    x_axis = np.arange(len(smoothed_phidp))
+
+    # Create and fit the Isotonic Regression model.
+    # 'increasing=True' ensures monotonicity.
+    # 'out_of_bounds="clip"' handles edge cases gracefully.
+    iso_reg = IsotonicRegression(increasing=True, out_of_bounds="clip")
+
+    # The fit_transform method computes the new monotonic profile.
+    monotonic_phidp = iso_reg.fit_transform(x_axis, smoothed_phidp)
+
 
     # 4. Re-apply the original mask to the final processed data
     processed_phidp_ma = np.ma.array(monotonic_phidp, mask=original_mask)
 
     return processed_phidp_ma
 
+
+
 def correct_attenuation_zphi_custom(radar, **params):
     """
     Performs attenuation correction using a custom, robust Z-PHI algorithm.
     """
-    logger.info("Starting custom Z-PHI attenuation correction.")
+    logger.info("Starting custom Z-PHI correction for Reflectivity and dual PHIDP outputs.")
 
     # --- 1. Unpack Parameters ---
     refl_field = params['input_refl_field']
@@ -163,65 +172,60 @@ def correct_attenuation_zphi_custom(radar, **params):
     output_refl_field = params['output_refl_field']
     alpha = params['alpha']
     b_coef = params['b_coef']
-    output_spec_attn_field = params.get('output_spec_attn_field', 'specific_attenuation')
-    output_pia_field = params.get('output_pia_field', 'path_integrated_attenuation')
 
-    # --- 2. Prepare Data (Corrected Section) ---
-    # Get the raw data, which might be a regular or masked array
+    window_length = params.get('window_length', 11)
+    delta_phidp_th = params.get('delta_phidp_th', 0)
+
+    output_phidp_c_field = params.get('output_phidp_c_field', 'PHIDP_C')
+    output_phidp_sc_field = params.get('output_phidp_sc_field', 'PHIDP_SC')
+
+
+    output_spec_attn_field = params.get('output_spec_attn_field', 'A')
+    output_pia_field = params.get('output_pia_field', 'PIA')
+
+    # --- 2. Prepare Data ---
     refl_data = radar.fields[refl_field]['data']
     phidp_data = radar.fields[phidp_field]['data']
 
-    # Explicitly convert to masked arrays. This handles cases where the input
-    # is a regular ndarray (i.e., has no masked values), ensuring that
-    # methods like .filled() will always be available.
     refl_ma = np.ma.masked_invalid(refl_data, copy=True)
     phidp_ma = np.ma.masked_invalid(phidp_data, copy=True)
 
     gate_spacing_km = (radar.range['data'][1] - radar.range['data'][0]) / 1000.0
     original_mask = np.ma.getmaskarray(refl_ma)
 
-    # Create a writeable numpy array from the reflectivity data.
-    # .filled() returns a regular ndarray, which we then copy.
-    # This is a robust way to get a modifiable copy of the data.
     corrected_refl_data = refl_ma.filled(0.0).copy()
-
     spec_attn_data = np.zeros_like(corrected_refl_data, dtype=float)
     pia_data = np.zeros_like(corrected_refl_data, dtype=float)
 
+    phidp_c_data = np.zeros_like(corrected_refl_data, dtype=float)
+    phidp_sc_data = np.zeros_like(corrected_refl_data, dtype=float)
+
+
     # --- 4. Main Attenuation Calculation Loop ---
     for i in range(radar.nrays):
-
         ray_refl_filled = refl_ma[i, :]
         ray_refl = corrected_refl_data[i, :]
+        raw_ray_phidp = phidp_ma[i, :]
 
 
-        ray_phidp = phidp_ma[i, :]
-        ray_phidp = _process_phidp_ray(ray_phidp, window_len=10)
+        processed_ray_phidp = _process_phidp_ray(raw_ray_phidp, window_len=window_length)
+        phidp_c_data[i, :] = processed_ray_phidp
 
-        delta_phidp = _find_delta_phidp(ray_refl_filled, ray_phidp,
-                                        refl_threshold_dbz=10, min_precip_gates=5)
+        delta_phidp = _find_delta_phidp(ray_refl_filled, processed_ray_phidp)
 
-        if delta_phidp is None:
+        if delta_phidp is None or delta_phidp < delta_phidp_th:
             continue
-
-        if delta_phidp < 0:
-            delta_phidp = 0
 
         pia_total = alpha * delta_phidp
         c_factor = np.exp(0.23 * b_coef * pia_total) - 1.0
 
         if c_factor < 0:
-            #logger.debug(f"Attenuation correction failed for ray {r1}, pia {r2}, c_factor {c_factor}")
             continue
 
-
         refl_linear = 10.0 ** (ray_refl / 10.0)
-        # Set linear reflectivity to 0 where the original data was masked
-        # (i.e., where ray_refl was filled with 0.0)
         refl_linear[ray_refl == 0.0] = 0.0
 
         integrand = refl_linear ** b_coef
-
         integral_up_to_r = cumulative_trapezoid(integrand, dx=gate_spacing_km, initial=0)
         integral_full_path = 0.46 * b_coef * integral_up_to_r[-1]
         integral_partial = 0.46 * b_coef * (integral_up_to_r[-1] - integral_up_to_r)
@@ -230,24 +234,53 @@ def correct_attenuation_zphi_custom(radar, **params):
         denominator[denominator == 0] = np.inf
 
         specific_attenuation = (refl_linear ** b_coef * c_factor) / denominator
-
         cumulative_pia = 2 * cumulative_trapezoid(specific_attenuation, dx=gate_spacing_km, initial=0)
 
+        # Update the fields for the current ray
         corrected_refl_data[i, :] += cumulative_pia
         spec_attn_data[i, :] = specific_attenuation
         pia_data[i, :] = cumulative_pia
 
+        if alpha > 1e-6:
+            phidp_sc_data[i, :] = cumulative_pia / alpha
+
     # --- 5. Final Field Creation ---
     fill_value = pyart.config.get_fillvalue()
 
+    # Clean up non-finite values from all calculated fields
     corrected_refl_data[~np.isfinite(corrected_refl_data)] = 0
     spec_attn_data[~np.isfinite(spec_attn_data)] = 0
     pia_data[~np.isfinite(pia_data)] = 0
+    phidp_c_data[~np.isfinite(phidp_c_data)] = 0
+    phidp_sc_data[~np.isfinite(phidp_sc_data)] = 0
 
+    # Add corrected reflectivity field
     output_field_dict = radar.fields[refl_field].copy()
     output_field_dict['data'] = np.ma.array(corrected_refl_data, mask=original_mask)
     output_field_dict['_FillValue'] = fill_value
     radar.add_field(output_refl_field, output_field_dict, replace_existing=True)
+
+    # --- MODIFICATION START: Add both PHIDP fields to the radar object ---
+    # Add the "Corrected/Cleaned Input" PHIDP_C field
+    if output_phidp_c_field:
+        phidp_c_dict = radar.fields[phidp_field].copy()
+        phidp_c_dict['data'] = np.ma.array(phidp_c_data, mask=original_mask)
+        phidp_c_dict['_FillValue'] = fill_value
+        phidp_c_dict['long_name'] = 'Processed differential phase'
+        phidp_c_dict['standard_name'] = 'processed_differential_phase'
+        phidp_c_dict['notes'] = 'Input differential phase after processing (e.g., smoothing).'
+        radar.add_field(output_phidp_c_field, phidp_c_dict, replace_existing=True)
+
+    # Add the "Self-Consistent" PHIDP_SC field
+    if output_phidp_sc_field:
+        phidp_sc_dict = radar.fields[phidp_field].copy()
+        phidp_sc_dict['data'] = np.ma.array(phidp_sc_data, mask=original_mask)
+        phidp_sc_dict['_FillValue'] = fill_value
+        phidp_sc_dict['long_name'] = 'Self-consistent differential phase'
+        phidp_sc_dict['standard_name'] = 'self_consistent_differential_phase'
+        phidp_sc_dict['notes'] = 'Differential phase reconstructed from PIA for self-consistency.'
+        radar.add_field(output_phidp_sc_field, phidp_sc_dict, replace_existing=True)
+    # --- MODIFICATION END ---
 
     if output_spec_attn_field:
         spec_attn_dict = pyart.config.get_metadata('specific_attenuation')
@@ -261,7 +294,13 @@ def correct_attenuation_zphi_custom(radar, **params):
         pia_dict['_FillValue'] = fill_value
         radar.add_field(output_pia_field, pia_dict, replace_existing=True)
 
-    logger.info(f"Custom Z-PHI attenuation correction complete. Field '{output_refl_field}' created.")
+    logger.info(
+        f"Custom Z-PHI correction complete. Fields '{output_refl_field}', "
+        f"'{output_phidp_c_field}', and '{output_phidp_sc_field}' created."
+    )
+    return radar
+
+
 
 # Messy try to use LP to correct PHIDP for zphi method
 # Several problems were faced since LP PRIMAL SOLUTION NOT FOUND: not sure due to clutter (not observable), phase (-180 -- 0)
