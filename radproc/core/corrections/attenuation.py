@@ -202,6 +202,8 @@ def correct_attenuation_zphi_custom(radar, **params):
 
     window_length = params.get('window_length', 11)
     delta_phidp_th = params.get('delta_phidp_th', 0)
+    refl_threshold_dbz = params.get('refl_threshold_dbz', 25.0)
+    min_precip_gates = params.get('min_precip_gates', 10)
 
     # Field names for new output data
     output_phidp_c_field = params.get('output_phidp_c_field', 'PHIDP_C')
@@ -222,25 +224,36 @@ def correct_attenuation_zphi_custom(radar, **params):
 
     # Initialize arrays for corrected and derived data.
     # Start with a copy of reflectivity filled with 0.0 for calculations.
-    corrected_refl_data = refl_ma.filled(0.0).copy()
-    spec_attn_data = np.zeros_like(corrected_refl_data, dtype=float)
-    pia_data = np.zeros_like(corrected_refl_data, dtype=float)
-    phidp_c_data = np.zeros_like(corrected_refl_data, dtype=float)   # For processed PhiDP
-    phidp_sc_data = np.zeros_like(corrected_refl_data, dtype=float)  # For self-consistent PhiDP
+    corrected_refl_ma = refl_ma.copy()
+    spec_attn_ma = np.ma.masked_all_like(refl_ma)
+    pia_ma = np.ma.masked_all_like(refl_ma)
+    phidp_c_ma = np.ma.masked_all_like(refl_ma)
+    phidp_sc_ma = np.ma.masked_all_like(refl_ma)
+
+    #corrected_refl_data = refl_ma.filled(0.0).copy()
+    #spec_attn_data = np.zeros_like(corrected_refl_data, dtype=float)
+    #pia_data = np.zeros_like(corrected_refl_data, dtype=float)
+    #phidp_c_data = np.zeros_like(corrected_refl_data, dtype=float)   # For processed PhiDP
+    #phidp_sc_data = np.zeros_like(corrected_refl_data, dtype=float)  # For self-consistent PhiDP
 
     # --- 3. Main Attenuation Calculation Loop (Iterate over each ray) ---
     for i in range(radar.nrays):
         # Slices for the current ray
-        ray_refl_filled = refl_ma[i, :]          # Original Z with mask
-        ray_refl = corrected_refl_data[i, :]     # Unmasked Z for calculation
+        ray_refl_ma = refl_ma[i, :]          # Original Z with mask
+        #ray_refl = corrected_refl_data[i, :]     # Unmasked Z for calculation
         raw_ray_phidp = phidp_ma[i, :]           # Original PhiDP with mask
 
         # Process the raw PhiDP ray to be smooth and monotonic
         processed_ray_phidp = _process_phidp_ray(raw_ray_phidp, window_len=window_length)
-        phidp_c_data[i, :] = processed_ray_phidp
+        phidp_c_ma[i, :] = processed_ray_phidp
 
         # Calculate the total phase shift across the precipitation in the ray
-        delta_phidp = _find_delta_phidp(ray_refl_filled, processed_ray_phidp)
+        delta_phidp = _find_delta_phidp(
+            ray_refl_ma,
+            processed_ray_phidp,
+            refl_threshold_dbz=refl_threshold_dbz,
+            min_precip_gates=min_precip_gates,
+        )
 
         # If no valid precip path is found or the shift is too small, skip this ray.
         if delta_phidp is None or delta_phidp < delta_phidp_th:
@@ -255,12 +268,21 @@ def correct_attenuation_zphi_custom(radar, **params):
             continue
 
         # Convert reflectivity to linear units for calculations.
-        refl_linear = 10.0 ** (ray_refl / 10.0)
-        refl_linear[ray_refl == 0.0] = 0.0  # Avoid log errors on zero-reflectivity gates
+        # 1. Convert the *masked* reflectivity ray to linear units. The mask is preserved.
+        refl_linear_ma = np.ma.power(10.0, ray_refl_ma / 10.0)
 
-        # This section implements the constrained Z-PHI algorithm.
-        integrand = refl_linear ** b_coef
-        integral_up_to_r = cumulative_trapezoid(integrand, dx=gate_spacing_km, initial=0)
+        # 2. Calculate the integrand term. The mask is still preserved.
+        integrand_ma = refl_linear_ma ** b_coef
+
+        # 3. Fill the masked values with 0.0 *only now*, for the cumulative functions.
+        integrand_filled = integrand_ma.filled(0.0)
+
+        integral_up_to_r = cumulative_trapezoid(integrand_filled, dx=gate_spacing_km, initial=0)
+
+        # Check for non-physical paths to prevent division by zero.
+        if integral_up_to_r[-1] < 1e-9:
+            continue
+
         integral_full_path = 0.46 * b_coef * integral_up_to_r[-1]
         integral_partial = 0.46 * b_coef * (integral_up_to_r[-1] - integral_up_to_r)
 
@@ -269,41 +291,32 @@ def correct_attenuation_zphi_custom(radar, **params):
         denominator[denominator == 0] = np.inf
 
         # Calculate specific attenuation (A) for each gate in the ray
-        specific_attenuation = (refl_linear ** b_coef * c_factor) / denominator
+        specific_attenuation_ray = (integrand_filled * c_factor) / denominator
         # Calculate Path Integrated Attenuation (PIA) by integrating A.
         # The factor of 2 accounts for the two-way path of the radar signal.
-        cumulative_pia = 2 * cumulative_trapezoid(specific_attenuation, dx=gate_spacing_km, initial=0)
+        cumulative_pia_ray = 2 * cumulative_trapezoid(specific_attenuation_ray, dx=gate_spacing_km, initial=0)
 
         # Update the fields for the current ray
-        corrected_refl_data[i, :] += cumulative_pia
-        spec_attn_data[i, :] = specific_attenuation
-        pia_data[i, :] = cumulative_pia
+        corrected_refl_ma[i, :] += cumulative_pia_ray
+        spec_attn_ma[i, :] = np.ma.array(specific_attenuation_ray, mask=ray_refl_ma.mask)
+        pia_ma[i, :] = np.ma.array(cumulative_pia_ray, mask=ray_refl_ma.mask)
 
-        # Reconstruct a "self-consistent" PhiDP from the calculated PIA
-        # This shows what PhiDP *should* look like given the final attenuation profile.
-        if alpha > 1e-6: # Avoid division by zero
-            phidp_sc_data[i, :] = cumulative_pia / alpha
+        if alpha > 1e-6:
+            phidp_sc_ma[i, :] = np.ma.array(cumulative_pia_ray / alpha, mask=ray_refl_ma.mask)
 
     # --- 4. Final Field Creation and Cleanup ---
     fill_value = pyart.config.get_fillvalue()
 
-    # Clean up non-finite values (NaN, inf) that may result from calculations
-    corrected_refl_data[~np.isfinite(corrected_refl_data)] = fill_value
-    spec_attn_data[~np.isfinite(spec_attn_data)] = fill_value
-    pia_data[~np.isfinite(pia_data)] = fill_value
-    phidp_c_data[~np.isfinite(phidp_c_data)] = fill_value
-    phidp_sc_data[~np.isfinite(phidp_sc_data)] = fill_value
-
     # Add corrected reflectivity field to the radar object
     output_field_dict = radar.fields[refl_field].copy()
-    output_field_dict['data'] = np.ma.array(corrected_refl_data, mask=original_mask)
+    output_field_dict['data'] = corrected_refl_ma
     output_field_dict['_FillValue'] = fill_value
     radar.add_field(output_refl_field, output_field_dict, replace_existing=True)
 
     # Add the "Corrected/Cleaned Input" PHIDP_C field
     if output_phidp_c_field:
         phidp_c_dict = radar.fields[phidp_field].copy()
-        phidp_c_dict['data'] = np.ma.array(phidp_c_data, mask=original_mask)
+        phidp_c_dict['data'] = phidp_c_ma
         phidp_c_dict['_FillValue'] = fill_value
         phidp_c_dict['long_name'] = 'Processed differential phase'
         phidp_c_dict['standard_name'] = 'processed_differential_phase'
@@ -313,7 +326,7 @@ def correct_attenuation_zphi_custom(radar, **params):
     # Add the "Self-Consistent" PHIDP_SC field
     if output_phidp_sc_field:
         phidp_sc_dict = radar.fields[phidp_field].copy()
-        phidp_sc_dict['data'] = np.ma.array(phidp_sc_data, mask=original_mask)
+        phidp_sc_dict['data'] = phidp_sc_ma
         phidp_sc_dict['_FillValue'] = fill_value
         phidp_sc_dict['long_name'] = 'Self-consistent differential phase'
         phidp_sc_dict['standard_name'] = 'self_consistent_differential_phase'
@@ -323,14 +336,14 @@ def correct_attenuation_zphi_custom(radar, **params):
     # Add specific attenuation field
     if output_spec_attn_field:
         spec_attn_dict = pyart.config.get_metadata('specific_attenuation')
-        spec_attn_dict['data'] = np.ma.array(spec_attn_data, mask=original_mask)
+        spec_attn_dict['data'] = spec_attn_ma
         spec_attn_dict['_FillValue'] = fill_value
         radar.add_field(output_spec_attn_field, spec_attn_dict, replace_existing=True)
 
     # Add path integrated attenuation field
     if output_pia_field:
         pia_dict = pyart.config.get_metadata('path_integrated_attenuation')
-        pia_dict['data'] = np.ma.array(pia_data, mask=original_mask)
+        pia_dict['data'] = pia_ma
         pia_dict['_FillValue'] = fill_value
         radar.add_field(output_pia_field, pia_dict, replace_existing=True)
 
@@ -339,7 +352,6 @@ def correct_attenuation_zphi_custom(radar, **params):
         f"'{output_phidp_c_field}', and '{output_phidp_sc_field}' created."
     )
     return radar
-
 
 
 # Messy try to use LP to correct PHIDP for zphi method
