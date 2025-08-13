@@ -7,8 +7,8 @@ from radproc.core.config import get_setting
 from .filtering import filter_noise_gatefilter
 from .despeckle import despeckle_field_pyart, despeckle_by_azimuth_width
 from .attenuation import correct_attenuation_kdp, correct_attenuation_zphi_custom
-from .qpe import estimate_rate_composite
-from .utils import sanitize_field
+from .qpe import estimate_rate_composite, estimate_rate_a_z
+from .utils import sanitize_field, ensure_standard_fields_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,8 @@ def _dispatch_rate_method(radar, config):
     params = config.get('params', {})
     if method == 'composite_kdp_z':
         estimate_rate_composite(radar, **params)
+    elif method == 'a_z':  # Our new method
+        estimate_rate_a_z(radar, **params)
     elif method == 'none':
         logger.info("No rate estimation specified.")
     else:
@@ -103,6 +105,8 @@ def apply_corrections(radar: pyart.core.Radar, version: str) -> pyart.core.Radar
 
     _dispatch_attenuation_method(radar, config.get('attenuation', {}))
     _dispatch_rate_method(radar, config.get('rate_estimation', {}))
+
+    ensure_standard_fields_metadata(radar)
 
     #finally:
         # --- Final Step: Clean up all temporary fields ---

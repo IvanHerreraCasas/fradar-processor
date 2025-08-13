@@ -93,3 +93,78 @@ def estimate_rate_composite(radar, **params):
     # Use replace_existing=True to ensure the original field is overwritten
     radar.add_field(output_rate_field, final_rate_field, replace_existing=True)
     logger.info(f"Successfully updated field '{output_rate_field}' with composite rain rate.")
+
+
+def estimate_rate_a_z(radar, **params):
+    """
+    Estimates rain rate using a specific attenuation-based method (R-A) with a
+    fallback to a reflectivity-based method (R-Z).
+
+    This method is designed to be used after attenuation correction, such as the
+    Z-PHI method, has been run. It uses the calculated specific attenuation (A)
+    to estimate rain rate where A is available and considered reliable. In all
+    other regions, it falls back to using the attenuation-corrected
+    reflectivity (Z).
+
+    Args:
+        radar (pyart.core.Radar): The radar object to process.
+        **params (dict): A dictionary of parameters, including:
+            a_field (str): Name of the specific attenuation field.
+            refl_field (str): Name of the (corrected) reflectivity field.
+            output_rate_field (str): Name for the output rain rate field.
+            a_a_coef, a_b_coef (float): Coeffs for R=c*A^d relationship.
+            z_a_coef, z_b_coef (float): Coeffs for R=a*Z^b relationship.
+    """
+    logger.info("Applying attenuation-based (R-A) rain rate with R-Z fallback...")
+
+    # --- 1. Unpack Parameters ---
+    try:
+        a_field = params['a_field']
+        refl_field = params['refl_field']
+        output_rate_field = params['output_rate_field']
+        a_a, a_b = float(params['a_a_coef']), float(params['a_b_coef'])
+        z_a, z_b = float(params['z_a_coef']), float(params['z_b_coef'])
+    except KeyError as e:
+        logger.error(f"Missing required parameter for R(A,Z) estimation: {e}. Skipping.")
+        return
+
+    if a_field not in radar.fields or refl_field not in radar.fields:
+        logger.error(f"Input fields '{a_field}' or '{refl_field}' not found. Skipping.")
+        return
+
+    # --- 2. Calculate R(Z) Everywhere ---
+    # This will serve as our base and fallback rate.
+    # The est_rain_rate_z function correctly handles the conversion from dBZ.
+    r_z_dict = pyart.retrieve.est_rain_rate_z(
+        radar, alpha=z_a, beta=z_b, refl_field=refl_field)
+
+    # --- 3. Calculate R(A) Where A is Valid ---
+    # R = c * A^d. This calculation is performed only on the valid (unmasked)
+    # portions of the specific attenuation field. The result is a MaskedArray.
+    r_a_dict = pyart.retrieve.est_rain_rate_a(
+        radar, alpha=a_a, beta=a_b, a_field=a_field
+    )
+
+
+    # --- 4. Create the Composite Field ---
+    # The logic is simple: where rate_from_a has a valid value, use it.
+    # Otherwise, use the value from rate_from_z.
+    # np.ma.where is perfect for this, as it respects the masks.
+    final_rate_data = np.ma.where(
+        ~np.ma.getmask(r_a_dict['data']),  # Condition: where A is NOT masked
+        r_a_dict['data'],                 # Value if True
+        r_z_dict['data']                  # Value if False (fallback)
+    )
+
+    # --- 6. Add the Final Field to the Radar Object ---
+    final_rate_field = r_z_dict.copy() # Reuse metadata from the R(Z) calculation
+    final_rate_field['data'] = final_rate_data
+    final_rate_field['long_name'] = 'Rain rate from R(A) with R(Z) fallback'
+    final_rate_field['standard_name'] = 'rainfall_rate'
+    final_rate_field['comment'] = (
+        f'Composite of R(A) (c={a_a}, d={a_b}) where A is valid, with '
+        f'fallback to R(Z) (a={z_a}, b={z_b}).'
+    )
+
+    radar.add_field(output_rate_field, final_rate_field, replace_existing=True)
+    logger.info(f"Successfully created field '{output_rate_field}' with R(A,Z) method.")
