@@ -78,17 +78,24 @@ def get_connection():
 
 
 def release_connection(conn):
-    """Releases a connection back to the pool."""
+    """Releases a connection back to the pool, ensuring the transaction is closed."""
     if _pool and conn:
         try:
+            # Roll back any outstanding transaction. This is the crucial fix.
+            # It cleans the connection's state before returning it to the pool.
+            conn.rollback()
             _pool.putconn(conn)
         except psycopg2.pool.PoolError as e:
             logger.error(f"Failed to release connection to pool: {e}", exc_info=True)
-            # If releasing fails, we might have a bigger pool problem.
-            # Depending on the error, conn.close() might be an alternative.
             try:
-                conn.close()  # Attempt to close it if putconn failed badly
+                conn.close()
             except Exception:
+                pass
+        except psycopg2.Error as db_err:
+             logger.error(f"Database error during connection rollback/release: {db_err}", exc_info=True)
+             try:
+                conn.close() # If rollback fails, the connection is likely bad, so close it.
+             except Exception:
                 pass
 
 

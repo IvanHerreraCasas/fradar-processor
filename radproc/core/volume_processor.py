@@ -218,6 +218,7 @@ def create_volume_from_files(
     return corrected_volume
 
 
+
 def process_volume(volume_identifier: datetime, version: str = 'v1_0') -> bool:
     """
     Orchestrates the processing of a complete volume of radar scans. It fetches
@@ -262,8 +263,13 @@ def process_volume(volume_identifier: datetime, version: str = 'v1_0') -> bool:
         # 4. Log the new volume file to the database
         add_processed_volume_log(conn, volume_identifier, cfradial_filepath, version)
 
+        conn.commit()
+
     except Exception as e:
         logger.error(f"An unexpected error occurred during volume processing for ID {volume_identifier.isoformat()}: {e}", exc_info=True)
+
+        if conn:
+            conn.rollback()
         return False
     finally:
         release_connection(conn)
