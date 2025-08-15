@@ -401,3 +401,199 @@ def create_ppi_image(
             plt.close(fig)
 
 
+def create_accumulation_image(
+        ds: xr.Dataset,
+        variable: str,
+        style: PlotStyle,
+        watermark_path: Optional[str] = None,
+        watermark_zoom: float = 0.05,
+        coverage_radius_km: Optional[float] = 70.0,
+        plot_extent: Optional[Tuple[float, float, float, float]] = None
+) -> Optional[bytes]:
+    """
+    Generates a plot for an accumulated precipitation grid.
+
+    Args:
+        ds: Georeferenced xarray.Dataset containing the accumulated variable.
+            Must include 'start_time_utc' and 'end_time_utc' in attributes.
+        variable: The name of the data variable to plot (e.g., "precipitation_accumulation").
+        style: A PlotStyle object for the variable.
+        watermark_path: Optional path to a watermark image file.
+        watermark_zoom: Zoom factor for the watermark image.
+        coverage_radius_km: Radius in km for the radar coverage circle.
+        plot_extent: Optional tuple (LonMin, LonMax, LatMin, LatMax) to override default extent.
+
+    Returns:
+        Bytes representing the generated PNG image, or None if plotting fails.
+    """
+    fig = None
+    try:
+        # --- Input Validation ---
+        if variable not in ds.data_vars:
+            logger.error(f"Variable '{variable}' not found in the dataset.")
+            return None
+
+        # --- Extract Metadata ---
+        try:
+            data_variable = ds[variable]
+            start_dt_utc = datetime.fromisoformat(data_variable.attrs['start_time_utc'])
+            end_dt_utc = datetime.fromisoformat(data_variable.attrs['end_time_utc'])
+            title_start = start_dt_utc.strftime("%Y-%m-%d %H:%M")
+            title_end = end_dt_utc.strftime("%Y-%m-%d %H:%M UTC")
+            elevation = float(ds['elevation'].values.item())
+
+            radar_lat = float(ds['latitude'].values.item())
+            radar_lon = float(ds['longitude'].values.item())
+
+        except Exception as meta_err:
+            logger.error(f"Could not extract metadata from accumulation dataset: {meta_err}")
+            return None
+
+        # --- Determine CRS ---
+        try:
+            proj_crs = get_dataset_crs(ds)
+            if proj_crs is None: raise ValueError("CRS not found in dataset")
+
+            cartopy_crs_instance = None
+            if pyproj and isinstance(proj_crs, pyproj.crs.CRS):
+                cf_params = proj_crs.to_cf()
+                grid_mapping_name = cf_params.get("grid_mapping_name")
+
+                if grid_mapping_name == "azimuthal_equidistant":
+                    clon = cf_params.get("longitude_of_projection_origin")
+                    clat = cf_params.get("latitude_of_projection_origin")
+                    globe = ccrs.Globe(ellipse="WGS84")  # Default to WGS84
+                    if clon is not None and clat is not None:
+                        cartopy_crs_instance = ccrs.AzimuthalEquidistant(
+                            central_longitude=clon, central_latitude=clat, globe=globe
+                        )
+                    else:
+                        raise ValueError("Could not extract central lon/lat from pyproj CRS.")
+                else:
+                    raise ValueError(f"Unsupported pyproj grid mapping for Cartopy conversion: {grid_mapping_name}")
+            elif isinstance(proj_crs, ccrs.Projection):
+                cartopy_crs_instance = proj_crs
+            else:
+                raise TypeError(f"Unsupported CRS type: {type(proj_crs)}")
+        except Exception as crs_err:
+            logger.error(f"Could not determine/convert Cartopy CRS from dataset: {crs_err}")
+            return None
+
+        # --- Plot Setup ---
+        with plt.ioff():
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(111, projection=ccrs.PlateCarree())
+
+            if style.map_tile:
+                ax.add_image(style.map_tile, 9,
+                        alpha=0.5,
+                        cmap="gray",)
+
+            # Set plot extent
+            if plot_extent:
+                ax.set_extent(plot_extent, crs=ccrs.PlateCarree())
+            else:
+                x_min, x_max = ds["x"].min().item(), ds["x"].max().item()
+                y_min, y_max = ds["y"].min().item(), ds["y"].max().item()
+                ax.set_extent([x_min, x_max, y_min, y_max], crs=cartopy_crs_instance)
+
+            # Plot the data
+            quadmesh = ds[variable].plot(
+                ax=ax,
+                x="x",
+                y="y",
+                cmap=style.cmap,
+                norm=style.norm,
+                transform=cartopy_crs_instance,
+                add_colorbar=True,
+                cbar_kwargs=dict(pad=0.075, shrink=0.75,
+                                 label=f"{style.variable_dname} ({ds[variable].attrs.get('units', 'mm')})")
+            )
+
+            if coverage_radius_km is not None and coverage_radius_km > 0:
+                try:
+                    geodesic = Geodesic()
+                    circle_points = geodesic.circle(
+                        lon=radar_lon,
+                        lat=radar_lat,
+                        radius=coverage_radius_km * 1000,  # Convert km to meters
+                        n_samples=100,
+                        endpoint=False,
+                    )
+                    coverage_area = shapely.geometry.Polygon(circle_points)
+                    ax.add_geometries(
+                        [coverage_area],
+                        crs=ccrs.PlateCarree(),  # Circle defined in lat/lon
+                        facecolor="none",
+                        edgecolor="black",
+                        linewidth=0.5,
+                        linestyle="--",
+                    )
+                except Exception as circle_err:
+                    logger.warning(f"Could not draw coverage circle: {circle_err}")
+
+            # Add Map Features
+            grid_lines = ax.gridlines(draw_labels=True, crs=ccrs.PlateCarree())
+            grid_lines.top_labels = False
+            grid_lines.right_labels = False
+
+            # --- Title ---
+            ax.set_title(
+                f"Accumulated Precipitation (EL: {elevation}°)\nFrom: {title_start} to {title_end}"
+            )
+            fig.tight_layout()
+
+            # --- Watermark ---
+            if watermark_path and os.path.exists(watermark_path):
+                logger.info(f"Watermark exists: {watermark_path}")
+                try:
+                    watermark_img = plt.imread(watermark_path)
+                    imagebox = OffsetImage(watermark_img, zoom=watermark_zoom)
+
+                    # Position below colorbar (relative to figure fraction)
+                    cbar = quadmesh.colorbar
+                    if cbar:
+                        cbar_ax = cbar.ax
+                        cbar_pos = (
+                            cbar_ax.get_position()
+                        )  # Get position after layout adjustments
+
+                        # Anchor point: Bottom-right of the colorbar axes in figure coordinates
+                        anchor_x = cbar_pos.x1
+                        anchor_y = cbar_pos.y0 - 0.02  # Slightly below the colorbar
+
+                        ab = AnnotationBbox(
+                            imagebox,
+                            (anchor_x, anchor_y),
+                            xycoords="figure fraction",
+                            box_alignment=(
+                                1.0,
+                                1.0,
+                            ),  # Align top-right of image slightly above anchor
+                            frameon=False,
+                            # zorder=10,
+                        )  # Ensure watermark is on top
+                        ax.add_artist(ab)
+                    else:
+                        logger.warning(
+                            "Colorbar not found, cannot position watermark relative to it."
+                        )
+                        # Alternative positioning could be added here (e.g., bottom-right of figure)
+
+                except Exception as wm_err:
+                    logger.warning(f"Could not add watermark: {wm_err}")
+            elif watermark_path:
+                logger.info(f"Watermark file not found: {watermark_path}")
+
+            # --- Save to Buffer ---
+            buffer = io.BytesIO()
+            fig.savefig(buffer, format="png", dpi=150)
+            buffer.seek(0)
+            return buffer.getvalue()
+
+    except Exception as e:
+        logger.error(f"Failed to create accumulation plot: {e}", exc_info=True)
+        return None
+    finally:
+        if fig is not None:
+            plt.close(fig)

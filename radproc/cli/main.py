@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
+import gc
 from typing import Optional, List
 import matplotlib
+
+from radproc.core.grid_accumulation import orchestrate_accumulation_generation
+
 try:
     matplotlib.use("Agg")
     print("Matplotlib backend set to 'Agg'.")
@@ -671,6 +675,8 @@ def cli_process_volumes(args: argparse.Namespace):
                 logger.error(f"An unexpected error occurred while processing volume {vol_id.isoformat()}: {e}", exc_info=True)
                 error_count += 1
 
+            gc.collect()
+
     except Exception as e:
         logger.exception("A critical error occurred during the volume processing workflow:")
         error_count += 1
@@ -705,6 +711,54 @@ def cli_plot(args: argparse.Namespace):
         version=args.version,
         plot_extent=args.extent
     )
+
+
+def cli_generate_accumulation(args: argparse.Namespace):
+    """Handler for the 'generate-accumulation' command."""
+    logger = logging.getLogger(__name__)
+    logger.info(f"=== Starting Accumulated Precipitation Map Generation ===")
+
+    dt_format = "%Y%m%d_%H%M"
+    try:
+        start_dt_utc = datetime.strptime(args.start, dt_format).replace(tzinfo=timezone.utc)
+        end_dt_utc = datetime.strptime(args.end, dt_format).replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.error(f"Invalid date format. Please use YYYYMMDD_HHMM.")
+        sys.exit(1)
+
+    if start_dt_utc >= end_dt_utc:
+        logger.error("Start datetime must be before end datetime.")
+        sys.exit(1)
+
+    if args.source == 'corrected' and not args.version:
+        logger.error("A --version must be specified when using --source corrected.")
+        sys.exit(1)
+
+    # Prepare plot_config if a plot output is requested
+    plot_config = None
+    if args.plot_output:
+        plot_config = {
+            "output_path": args.plot_output,
+            "extent": args.extent  # Will be None if not provided, which is handled by the plotter
+        }
+        logger.info(f"Visualization will be generated at: {args.plot_output}")
+
+    # Call the main orchestrator function
+    success = orchestrate_accumulation_generation(
+        start_dt=start_dt_utc,
+        end_dt=end_dt_utc,
+        elevation=args.elevation,
+        output_file=args.output_file,
+        source=args.source,
+        version=args.version,
+        plot_config=plot_config
+    )
+
+    if success:
+        logger.info("Accumulation map generation finished successfully.")
+    else:
+        logger.error("Accumulation map generation failed. Check logs for details.")
+        sys.exit(1)
 
 def main():
     # 1. Load Core Configuration FIRST
@@ -776,6 +830,43 @@ def main():
     )
     accumulate_parser.set_defaults(func=cli_accumulate)
     accumulate_parser.set_defaults(func=cli_accumulate)
+
+    # +++ 'accumulate-map' command +++
+    generate_accumulation_parser = subparsers.add_parser(
+        "generate-accumulation",
+        help="Generate a 2D accumulated precipitation from scans.",
+        description="Scans the database for radar data within a time range, integrates the\n"
+                    "precipitation rate onto a 2D grid, and saves the result as a NetCDF file.\n"
+                    "Optionally, it can also generate a PNG visualization of the map."
+    )
+    generate_accumulation_parser.add_argument("start", help="Start datetime (YYYYMMDD_HHMM).")
+    generate_accumulation_parser.add_argument("end", help="End datetime (YYYYMMDD_HHMM).")
+    generate_accumulation_parser.add_argument("elevation", type=float, help="Target elevation angle in degrees.")
+    generate_accumulation_parser.add_argument("output_file", help="Output NetCDF file path for the accumulation data.")
+    generate_accumulation_parser.add_argument(
+        "--source",
+        choices=['raw', 'corrected'],
+        default='raw',
+        help="The data source to use (default: raw)."
+    )
+    generate_accumulation_parser.add_argument(
+        "--version",
+        metavar="VERSION",
+        help="The correction version to use (required for '--source corrected')."
+    )
+    generate_accumulation_parser.add_argument(
+        "--plot-output",
+        metavar="IMAGE_PATH",
+        help="If specified, generates a PNG visualization of the map at this path."
+    )
+    generate_accumulation_parser.add_argument(
+        "--extent",
+        nargs=4,
+        type=float,
+        metavar=('LONMIN', 'LONMAX', 'LATMIN', 'LATMAX'),
+        help="Set a custom plot extent for the visualization."
+    )
+    generate_accumulation_parser.set_defaults(func=cli_generate_accumulation)
 
     # --- 'animate' command ---
     animate_parser = subparsers.add_parser("animate", help="Create an animation.")
