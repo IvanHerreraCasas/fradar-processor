@@ -4,6 +4,7 @@ import numpy as np
 import logging
 from scipy.integrate import cumulative_trapezoid
 from scipy.signal import savgol_filter, medfilt
+from scipy.ndimage import median_filter, uniform_filter1d
 from sklearn.isotonic import IsotonicRegression
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,89 @@ def _process_phidp_ray(phidp_ray, window_len):
     return processed_phidp_ma
 
 
+def _process_phidp_ray_valid_only(phidp_ray, window_len, smoother_type='median', mode='reflect'):
+    """
+    Unwraps, smooths, and prepares a single ray of differential phase ($\Phi_{DP}$) data.
+
+    This function processes a raw $\Phi_{DP}$ ray by isolating only the valid
+    (unmasked) data points. It unwraps the phase, applies a user-specified
+    smoothing filter (median or moving average), and returns the processed
+    ray. The processed values are placed back into an array with the original
+    mask structure, avoiding interpolation into masked regions.
+
+    Args:
+        phidp_ray (np.ma.MaskedArray):
+            A single ray of $\Phi_{DP}$ data.
+        window_len (int):
+            The kernel size for the smoothing filter.
+        smoother_type (str, optional):
+            The type of smoothing filter to apply. Options are 'median' or
+            'moving_average'. Defaults to 'median'.
+        mode (str, optional):
+            The mode used to handle filter boundaries. Defaults to 'reflect'.
+            Common options are 'reflect', 'constant', 'nearest', 'mirror', 'wrap'.
+            See the scipy.ndimage documentation for more details.
+
+    Returns:
+        np.ma.MaskedArray: The processed $\Phi_{DP}$ ray, with the original mask
+                           preserved.
+    """
+    # Get the original mask and extract only the valid data points and their indices.
+    original_mask = np.ma.getmaskarray(phidp_ray)
+    valid_mask = ~original_mask
+    x_valid = np.where(valid_mask)[0]
+    y_valid = phidp_ray[valid_mask].data
+
+    # If there are not enough valid data points for a single filter window,
+    # processing is not feasible. Return the original ray.
+    if len(x_valid) < window_len:
+        return phidp_ray
+
+    # --- Process only the valid (unmasked) data ---
+
+    # 1. Unwrap the phase data to remove 360-degree jumps.
+    unwrapped_phidp_valid = np.unwrap(y_valid, discont=180)
+
+    # 2. Smooth the unwrapped valid data using the specified filter.
+    if smoother_type == 'median':
+        # Ensure window_len is odd for the median filter
+        if window_len % 2 == 0:
+            window_len += 1
+        smoothed_phidp_valid = median_filter(
+            unwrapped_phidp_valid, size=window_len, mode=mode
+        )
+    elif smoother_type == 'moving_average':
+        smoothed_phidp_valid = uniform_filter1d(
+            unwrapped_phidp_valid, size=window_len, mode=mode
+        )
+    else:
+        raise ValueError(
+            f"Unknown smoother_type: '{smoother_type}'. "
+            "Choose from 'median' or 'moving_average'."
+        )
+
+    # 3. Enforce that the profile is non-decreasing using Isotonic Regression.
+    #    This is applied to the valid data points using their original indices (x_valid)
+    #    to correctly capture the spatial relationship.
+    #iso_reg = IsotonicRegression(increasing=True, out_of_bounds="clip")
+    #monotonic_phidp_valid = iso_reg.fit_transform(x_valid, smoothed_phidp_valid)
+
+    # 4. Create a new masked array to hold the results.
+    #    Start with a fully masked array and then fill in the processed values.
+    processed_phidp = np.ma.array(
+        np.zeros_like(phidp_ray.data),
+        mask=True,
+        fill_value=phidp_ray.fill_value
+    )
+
+    # 5. Place the processed valid data back into the array at their original locations.
+    processed_phidp[x_valid] = smoothed_phidp_valid
+    # Unmask the locations where we just placed the valid data.
+    processed_phidp.mask[x_valid] = False
+
+    return processed_phidp
+
+
 def correct_attenuation_zphi_custom(radar, **params):
     """
     Performs attenuation correction on reflectivity using a custom, robust Z-PHI
@@ -204,6 +288,9 @@ def correct_attenuation_zphi_custom(radar, **params):
     delta_phidp_th = params.get('delta_phidp_th', 0)
     refl_threshold_dbz = params.get('refl_threshold_dbz', 25.0)
     min_precip_gates = params.get('min_precip_gates', 10)
+    process_valid_only = params.get('process_valid_only', False)
+    smoother_type = params.get('smoother_type', 'median')
+    mode = params.get('mode', 'reflect')
 
     # Field names for new output data
     output_phidp_c_field = params.get('output_phidp_c_field', 'PHIDP_C')
@@ -220,7 +307,6 @@ def correct_attenuation_zphi_custom(radar, **params):
     phidp_ma = np.ma.masked_invalid(phidp_data, copy=True)
 
     gate_spacing_km = (radar.range['data'][1] - radar.range['data'][0]) / 1000.0
-    original_mask = np.ma.getmaskarray(refl_ma)
 
     # Initialize arrays for corrected and derived data.
     # Start with a copy of reflectivity filled with 0.0 for calculations.
@@ -230,12 +316,6 @@ def correct_attenuation_zphi_custom(radar, **params):
     phidp_c_ma = np.ma.masked_all_like(refl_ma)
     phidp_sc_ma = np.ma.masked_all_like(refl_ma)
 
-    #corrected_refl_data = refl_ma.filled(0.0).copy()
-    #spec_attn_data = np.zeros_like(corrected_refl_data, dtype=float)
-    #pia_data = np.zeros_like(corrected_refl_data, dtype=float)
-    #phidp_c_data = np.zeros_like(corrected_refl_data, dtype=float)   # For processed PhiDP
-    #phidp_sc_data = np.zeros_like(corrected_refl_data, dtype=float)  # For self-consistent PhiDP
-
     # --- 3. Main Attenuation Calculation Loop (Iterate over each ray) ---
     for i in range(radar.nrays):
         # Slices for the current ray
@@ -244,7 +324,11 @@ def correct_attenuation_zphi_custom(radar, **params):
         raw_ray_phidp = phidp_ma[i, :]           # Original PhiDP with mask
 
         # Process the raw PhiDP ray to be smooth and monotonic
-        processed_ray_phidp = _process_phidp_ray(raw_ray_phidp, window_len=window_length)
+        if process_valid_only:
+            processed_ray_phidp = _process_phidp_ray_valid_only(raw_ray_phidp, window_len=window_length,
+                                                                smoother_type=smoother_type, mode=mode)
+        else:
+            processed_ray_phidp = _process_phidp_ray(raw_ray_phidp, window_len=window_length)
         phidp_c_ma[i, :] = processed_ray_phidp
 
         # Calculate the total phase shift across the precipitation in the ray
