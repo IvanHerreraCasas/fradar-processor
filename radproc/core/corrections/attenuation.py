@@ -54,12 +54,22 @@ def correct_attenuation_kdp(radar, **params):
     radar.add_field_like(input_refl_field, 'path_integrated_attenuation', pia_data, replace_existing=True)
 
 
-def _find_delta_phidp(reflectivity_ray, phidp_ray, refl_threshold_dbz=25, min_precip_gates=10, median_window=3):
+def _find_delta_phidp(
+    reflectivity_ray: np.ndarray,
+    phidp_ray: np.ndarray,
+    rhohv_ray: Optional[np.ndarray] = None,
+    refl_threshold_dbz: float = 25,
+    rhohv_threshold: float = 0.8,
+    min_precip_gates: int = 10,
+    median_window: int = 3
+) -> Optional[float]:
     """Calculates the differential phase shift ($\Delta \Phi_{DP}$) across a
     precipitation region identified in a ray.
 
-    The function first identifies all radar gates with reflectivity above a given
-    threshold. It then calculates the difference between the median differential
+    The function first identifies all radar gates with reflectivity (and
+    optionally co-polar correlation coefficient, $\rho_{hv}$) above given
+    thresholds. This helps to isolate meteorological echoes from noise or
+    clutter. It then calculates the difference between the median differential
     phase ($\Phi_{DP}$) at the end of the precipitation path and the median $\Phi_{DP}$
     at the start of the path. This averaging over a small window of gates
     provides a more stable result.
@@ -67,21 +77,39 @@ def _find_delta_phidp(reflectivity_ray, phidp_ray, refl_threshold_dbz=25, min_pr
     Args:
         reflectivity_ray (np.ndarray): 1D array of reflectivity data for a ray.
         phidp_ray (np.ndarray): 1D array of differential phase data for the ray.
+        rhohv_ray (np.ndarray, optional): 1D array of co-polar correlation
+                                          coefficient data for the ray. If
+                                          provided, it is used along with
+                                          reflectivity to identify precipitation
+                                          gates. Defaults to None.
         refl_threshold_dbz (float): The dBZ value above which a gate is
-                                    considered precipitation.
+                                    considered precipitation. Defaults to 25.
+        rhohv_threshold (float): The co-polar correlation coefficient value
+                                 above which a gate is considered precipitation.
+                                 This is only used if `rhohv_ray` is provided.
+                                 Defaults to 0.85.
         min_precip_gates (int): The minimum number of total gates required to be
                                 considered a valid precipitation segment.
-        median_window (int, optional): The number of gates at the start and end
-                                     of the precipitation path to average $\Phi_{DP}$
-                                     over. Defaults to 3.
+                                Defaults to 10.
+        median_window (int): The number of gates at the start and end
+                             of the precipitation path to average $\Phi_{DP}$
+                             over. Defaults to 3.
 
     Returns:
         float or None: The calculated delta $\Phi_{DP}$ value ($\Phi_{DP_{end}} - \Phi_{DP_{start}}$).
                        Returns None if a valid precipitation segment cannot be
                        found based on the criteria.
     """
-    # Find all gate indices where reflectivity is above the specified threshold.
-    above_threshold = np.where(reflectivity_ray > refl_threshold_dbz)[0]
+    # Create a boolean mask based on the reflectivity threshold.
+    precip_mask = reflectivity_ray > refl_threshold_dbz
+
+    # If rhohv data is provided, combine it with the reflectivity mask.
+    # This helps filter out non-meteorological echoes (e.g., clutter, insects).
+    if rhohv_ray is not None:
+        precip_mask &= (rhohv_ray > rhohv_threshold)
+
+    # Find all gate indices where the condition(s) are met.
+    above_threshold = np.where(precip_mask)[0]
 
     # If there are not enough gates above the threshold, it's not a valid precip segment.
     if above_threshold.size < min_precip_gates:
@@ -279,6 +307,7 @@ def correct_attenuation_zphi_custom(radar, **params):
 
     # --- 1. Unpack Parameters ---
     refl_field = params['input_refl_field']
+    rhohv_field = params.get('rhohv_field')
     phidp_field = params['input_phidp_field']
     output_refl_field = params['output_refl_field']
     alpha = params['alpha']
@@ -287,6 +316,7 @@ def correct_attenuation_zphi_custom(radar, **params):
     window_length = params.get('window_length', 11)
     delta_phidp_th = params.get('delta_phidp_th', 0)
     refl_threshold_dbz = params.get('refl_threshold_dbz', 25.0)
+    rhohv_threshold = params.get('rhohv_threshold', 0.8)
     min_precip_gates = params.get('min_precip_gates', 10)
     process_valid_only = params.get('process_valid_only', False)
     smoother_type = params.get('smoother_type', 'median')
@@ -301,6 +331,8 @@ def correct_attenuation_zphi_custom(radar, **params):
     # --- 2. Prepare Data Structures ---
     refl_data = radar.fields[refl_field]['data']
     phidp_data = radar.fields[phidp_field]['data']
+    if rhohv_field is not None:
+        rhohv_data = radar.fields[rhohv_field]['data']
 
     # Create masked arrays to handle invalid data gracefully.
     refl_ma = np.ma.masked_invalid(refl_data, copy=True)
@@ -320,6 +352,9 @@ def correct_attenuation_zphi_custom(radar, **params):
     for i in range(radar.nrays):
         # Slices for the current ray
         ray_refl_ma = refl_ma[i, :]          # Original Z with mask
+        ray_rhohv_ma = None
+        if rhohv_field is not None:
+            ray_rhohv_ma = rhohv_data[i, :]
         #ray_refl = corrected_refl_data[i, :]     # Unmasked Z for calculation
         raw_ray_phidp = phidp_ma[i, :]           # Original PhiDP with mask
 
@@ -337,6 +372,8 @@ def correct_attenuation_zphi_custom(radar, **params):
             processed_ray_phidp,
             refl_threshold_dbz=refl_threshold_dbz,
             min_precip_gates=min_precip_gates,
+            rhohv_ray=ray_rhohv_ma,
+            rhohv_threshold=rhohv_threshold,
         )
 
         # If no valid precip path is found or the shift is too small, skip this ray.
